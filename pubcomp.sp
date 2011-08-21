@@ -3,6 +3,8 @@
 #include <usermessages>
 #include <tf2_stocks>
 
+#include <sdktools>
+
 //#include "config.inc"
 //#include "version.inc"
 //[Vincenator] ^ these will contain the following, I assume
@@ -21,8 +23,6 @@ public Plugin:myinfo = {
 	url = "http://pubcomp.com/"
 };
 
-new bool:tickStarted = false; //I don't know how this works
-new bool:pubCompBotKicked = false; //I don't know how this works
 new String:gameCommands[MAX_COMMANDS][MAX_COMMAND_LENGTH];
 new commandCount = 0;
 
@@ -43,14 +43,16 @@ new classLimit[10];
 new bool:hasGameStarted=false;
 new bool:canPlayersReady=false;
 new bool:waitingForPlayer=false;
+new bool:waitingForSubVote=false;
+new bool:canPause=false;
 
 new bool:playerReady[MAXPLAYERS+1];
 new  playerSubVote[MAXPLAYERS+1];
 new Handle:gameCountdown = INVALID_HANDLE;
-new Handle:RevoteWaitTimer = INVALID_HANDLE;
-new Handle:EndSubVoteTimer = INVALID_HANDLE;
-new Handle:UnpauseGameTimer = INVALID_HANDLE;
 
+new Handle:countdownText=INVALID_HANDLE;
+new countdownTime=0;
+new String:countdownTextString[30]; //only needs to be 26 (for two-digit countdownTime)
 
 new playersNeeded = 1; //server should set this; make a command or cvar
 
@@ -84,13 +86,19 @@ public OnPluginStart() {
         RegConsoleCmd("pubcomp_kick_all_nonwhitelist", CommandKickAllNonwhitelist, "", FCVAR_PLUGIN);
         RegConsoleCmd("pubcomp_let_players_ready", CommandLetPlayersReady, "",FCVAR_PLUGIN);//allows players to .ready up and start the game
 
+        RegConsoleCmd("pause", ClientCommandPause, "",FCVAR_PLUGIN);//only let the pausebot pause
         RegConsoleCmd( "say", ReadyUnready, "", FCVAR_PLUGIN);
         //ServerCommand("mp_waitingforplayers_cancel 1"); //eventually I should find a nice place for this for soap dm; totally unimportant though
         HookEvent("player_changeclass",PlayerChangeClass,EventHookMode_Pre);
-        //we need to stop players from switching teams (to the other or to spec) if the hasGameStarted - hook playerteam and return plugin handled if hasGameStarted
-        HookEvent("tf_game_over",TFGameOver,EventHookMode_Pre);
 
+   //we need to stop players from switching teams (to the other or to spec) if the hasGameStarted - hook playerteam and return plugin handled if hasGameStarted
+
+        HookEvent("tf_game_over",TFGameOver,EventHookMode_Pre); //this is called when a team reaches winlimit
+        HookEvent("teamplay_game_over",TFGameOver,EventHookMode_Pre); //this is called when the time runs out (stalemate or win)
+        countdownText = CreateHudSynchronizer();
         ServerCommand("mp_tournament 0");
+        ServerCommand("mp_timelimit 0"); //so map never changes on its own
+
         ServerCommand("pubcomp_reset_game_setup"); //I'll rewrite this line so as to call the command internally.. /lazy
 }
 
@@ -109,14 +117,20 @@ public Action:CommandResetGameSetup(client, args){
 		return Plugin_Stop;
 	}
 
-//resets steamids, team, class, positions, class limits, and game commands
-//warmup mod is just overridden and therefore doesn't need to be reset
+	//resets steamids, team, class, positions, class limits, game commands, and votes
+	//warmup mod is just overridden and therefore doesn't need to be reset
 	numberOfPlayersAddSteam=0;
 	numberOfPlayersDropped=0;
 	numberOfPlayersAddTeam=0;
 	numberOfPlayersAddClass=0;
 	numberOfPlayersAddPositions=0;
 	numberOfClassLimit=1;
+	votesToSub=0;
+	votesToWait=0;
+	waitingForPlayer=false;
+	waitingForSubVote=false;
+	canPause=false;
+	gameCountdown = INVALID_HANDLE;
 
 	for(new i=0; i<32; i++){
 		steamIDforTeamsAndClasses[i][0]=0; //steamid
@@ -144,7 +158,7 @@ public Action:CommandResetGameSetup(client, args){
 	return Plugin_Handled;
 }
 
-public Action:CommandKickAllNonwhitelist(client, args){
+public Action:CommandKickAllNonwhitelist(client, args){ //should this include the pause bot? hm.. yes, it should, as long as the server isn't paused for some reason.
 	if ( client != 0 ) {
 		LogMessage( "Client %d is not permitted to reset the game setup.", client );
 		return Plugin_Stop;
@@ -161,7 +175,9 @@ public Action:CommandKickAllNonwhitelist(client, args){
 				}
 			}
 			if(isWhitelisted==false && IsClientConnected(i)){
-				KickClient(i, "You are not whitelisted for the new match" );
+					if(!IsFakeClient(i)){ //I added this in for the pause bot, so it's not kicked
+						KickClient(i, "You are not whitelisted for the new match" );
+					}
 			}
 		}
 	}
@@ -173,8 +189,12 @@ public Action:CommandLetPlayersReady(client,args){
 		LogMessage( "Client %d is not permitted to let players ready.", client );
 		return Plugin_Stop;
 	}
+	for(new i=1; i<MAXPLAYERS+1; i++){ //lets the players ready up, to start the new match
+		playerReady[i]=false;
+	}
+	gameCountdown = INVALID_HANDLE;
 	canPlayersReady=true;
-	PrintToChatAll("You may now type .ready and start the game.");
+	PrintToChatAll("\x04You may now type .ready and start the game.");
 	return Plugin_Handled;
 }
 
@@ -248,9 +268,9 @@ public PutPlayersOnTeam()
 						LogMessage("This player was not assigned a team.");
 						return;
 					} else if(teamForPlayer[a]==2){
-						PrintToChat(i,"You are being moved to the red team");
+						PrintToChat(i,"\x04You are being moved to the red team");
 					}else if(teamForPlayer[a]==3){
-						PrintToChat(i,"You are being moved to the blue team");
+						PrintToChat(i,"\x04You are being moved to the blue team");
 					}
 					ChangeClientTeam(i,teamForPlayer[a]);
 				}
@@ -270,7 +290,6 @@ public PutPlayersOnClass()
 			if(IsClientConnected(i)){
 				GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
 				if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
-
 					switch (classForPlayer[a])
 					{
 						case -1:
@@ -331,7 +350,7 @@ public PutPlayersOnClass()
 						}
 					}
 					TF2_SetPlayerClass(i, newClass, false, true);
-					PrintToChat(i,"Your class is being changed to %s.",className);
+					PrintToChat(i,"\x04Your class is being changed to %s.",className);
 				}
 			}
 		}
@@ -362,12 +381,6 @@ public Action:CommandAddSteamID( client, args ) {
 		LogMessage( "Client %d is not permitted to add users to the whitelist.", client );
 		return Plugin_Stop;
 	}
-
-	if ( !tickStarted ) { //[Vincenator] What does this do?? Do we need the server 'ticking' for any reason besides the steamidexpire, which I've since removed?
-		CreateFakeClient( "PubComp" ); // Will be auto-kicked; we need this to start the server ticking.
-		tickStarted = true;
-	}
-
 	decl String:id[20];
 	GetCmdArgString( id, sizeof( id ) );
 
@@ -387,32 +400,29 @@ public Action:TFGameOver(Handle: event, const String:name[], bool:dontBroadcast)
         //Bug: the scoreboard pops up and needs to be manually closed (hitting Tab once)
         CreateTimer(1.0, Timer:EndTournamentGame); //as soon as the game can have tournament off without changing maps, get rid of it - it is unnecessary and looks distracting
         LogMessage("Match over.")
-        PrintToChatAll("Game over!");
+        PrintToChatAll("\x04Match over!");
 }
 
 public Timer:EndTournamentGame(Handle:data){
         ServerCommand("mp_tournament 0");
         ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
-        PrintToChatAll("Entering warmup mode.");
-        //set the timelimit to unlimited so the map never changes?
+        PrintToChatAll("\x04Entering warmup mode.");
+        ServerCommand("mp_timelimit 0"); //so map never changes on its own
         hasGameStarted=false;
-
-        //now we need to reset some things to prepare for the next match, which will give us input
-        //actually, let the omniscient web server call the CommandResetGameSetup command whenever it wants to
 }
 
 
-//It appears I might need to have the same code for playerspawn and playerteam - leave it for now, see if anyone can break it ;)
+//It appears I might need to have the same code for playerspawn and playerteam
 //Bug: under same circumstances, the player's viewmodel is messed up. This is probably related to the above comment.
 public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroadcast) {
-//Bug: the text says "*You will respawn as [class]" immediately after "You cannot play [class]" when outside the spawn room
-	if(!hasGameStarted){
+//Bug: the text says "*You will respawn as [class]" immediately after "You cannot play [class]" when outside the spawn room' - we should block that message for aesthetics
+	if(!IsClientConnected(GetClientOfUserId (GetEventInt(event, "userid"))) || !hasGameStarted || IsFakeClient(GetClientOfUserId (GetEventInt(event, "userid"))) ){
 		return;
 	}
 
 	new userid = GetEventInt(event, "userid");
-	new TFClassType: class = TFClassType:GetEventInt(event, "class");
 	new user = GetClientOfUserId (userid);
+	new TFClassType: class = TFClassType:GetEventInt(event, "class");
 	new TFClassType: oldClass = TF2_GetPlayerClass(user);
 	new team = GetClientTeam(user);
 
@@ -427,90 +437,90 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 			if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
 				new canPlayClass[10]; // use indexes 1-9
 				new i=0;
-				while(positionsForPlayer[a][i]){
+				while(i<9 && positionsForPlayer[a][i]){
 					canPlayClass[positionsForPlayer[a][i]]=true;
 					i++;
 				}
 				if(class==TFClass_Scout){
 					if(IsFull(team,1,class)){
-						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more scouts.");
+						TF2_SetPlayerClass(user,oldClass,true,true); //should this section even include this function? why not nothing?
+						PrintToChat(user,"\x04Your team cannot have any more scouts.");
 					}
 					if(!canPlayClass[1]){
 						TF2_SetPlayerClass(user,oldClass,true,true); //third should be false if player died, maybe..
-						PrintToChat(user,"You cannot play scout.");
+						PrintToChat(user,"\x04You cannot play scout.");
 					}
 				}else if(class==TFClass_Soldier){
 					if(IsFull(team,2,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more soldiers.");
+						PrintToChat(user,"\x04Your team cannot have any more soldiers.");
 					}
 					if(!canPlayClass[2]){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"You cannot play soldier.");
+						PrintToChat(user,"\x04You cannot play soldier.");
 					}
 				}else if(class==TFClass_Pyro){
 					if(IsFull(team,3,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more pyros.");
+						PrintToChat(user,"\x04Your team cannot have any more pyros.");
 					}
 					if(!canPlayClass[3]){
 						TF2_SetPlayerClass(user,oldClass,true,true); 
-						PrintToChat(user,"You cannot play pyro.");
+						PrintToChat(user,"\x04You cannot play pyro.");
 					}
 				}else if(class==TFClass_DemoMan){
 					if(IsFull(team,4,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more demomen.");
+						PrintToChat(user,"\x04Your team cannot have any more demomen.");
 					}
 					if(!canPlayClass[4]){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"You cannot play demoman.");
+						PrintToChat(user,"\x04You cannot play demoman.");
 					}
 				}else if(class==TFClass_Heavy){
 					if(IsFull(team,5,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more heavies.");
+						PrintToChat(user,"\x04Your team cannot have any more heavies.");
 					}
 					if(!canPlayClass[5]){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"You cannot play heavy.");
+						PrintToChat(user,"\x04You cannot play heavy.");
 					}
 				}else if(class==TFClass_Engineer){
 					if(IsFull(team,6,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more engineers.");
+						PrintToChat(user,"\x04Your team cannot have any more engineers.");
 					}
 					if(!canPlayClass[6]){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"You cannot play engineer.");
+						PrintToChat(user,"\x04You cannot play engineer.");
 					}
 				}else if(class==TFClass_Medic){
 					if(IsFull(team,7,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more medics.");
+						PrintToChat(user,"\x04Your team cannot have any more medics.");
 					}
 					if(!canPlayClass[7]){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"You cannot play medic.");
+						PrintToChat(user,"\x04You cannot play medic.");
 					}
 				}else if(class==TFClass_Sniper){
 					if(IsFull(team,8,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more snipers.");
+						PrintToChat(user,"\x04Your team cannot have any more snipers.");
 					}
 					if(!canPlayClass[8]){
 						TF2_SetPlayerClass(user,oldClass,true,true); 
-						PrintToChat(user,"You cannot play sniper.");
+						PrintToChat(user,"\x04You cannot play sniper.");
 					}
 				}else if(class==TFClass_Spy){
 					if(IsFull(team,9,class)){
 						TF2_SetPlayerClass(user,oldClass,true,true);
-						PrintToChat(user,"Your team cannot have any more spies.");
+						PrintToChat(user,"\x04Your team cannot have any more spies.");
 					}
 					if(!canPlayClass[9]){
 						TF2_SetPlayerClass(user,oldClass,true,true); 
-						PrintToChat(user,"You cannot play spy.");
+						PrintToChat(user,"\x04You cannot play spy.");
 					}
 				}
 			}
@@ -519,16 +529,9 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 }
 
 public OnClientAuthorized( client, const String:auth[] ) {
-	// Don't kick the SourceTV bot or the replay bot.
-	if ( StrEqual( auth, "BOT" ) ) {
-		decl String:botName[MAX_NAME_LENGTH];
-		GetClientName( client, botName, MAX_NAME_LENGTH );
-		decl String:sourceTV[MAX_NAME_LENGTH];
-		new Handle:_sourceTV = FindConVar( "tv_name" );
-		GetConVarString( _sourceTV, sourceTV, MAX_NAME_LENGTH );
-		CloseHandle( _sourceTV );
-		if ( StrEqual( botName, "replay" ) || StrEqual( botName, sourceTV ) )
-			return;
+	// Nightgunner had an if StrEqual( auth, "BOT" ) to not kick the SourceTV bot or the replay bot, but I think IsFakeClient covers those bots (all bots)
+	if(IsFakeClient(client)){ //I added this in for the pause bot, so it's not kicked or seriously considered
+		return;
 	}
 
 	new bool:foundSteamID = findSteamID( auth );
@@ -543,23 +546,26 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		if(StrEqual(droppedPlayerSteamID[a],currentSteamID)){
 			droppedPlayerSteamID[a][0]=0;
 			numberOfPlayersDropped--;
-			//to-do: move every droppedPlayerSteamID down one index in the array
-			//cancel waiting timer (if it's for this player) - currently this assumes only one player at a time can drop; needs to be fixed
-			if(EndSubVoteTimer!=INVALID_HANDLE){
-				KillTimer(EndSubVoteTimer);
-			}
-			if(RevoteWaitTimer!=INVALID_HANDLE){
-				KillTimer(RevoteWaitTimer);
-			}
+			//to-do: move every droppedPlayerSteamID above this one down one index in the array
+
+			//this whole sub feature only works with one player dropped at a time
+
 			for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
 				playerSubVote[i]=0;
 			}
 			decl String:playerName[MAX_NAME_LENGTH];
 			GetClientName( client, playerName, MAX_NAME_LENGTH );
 			LogMessage("Player %s has rejoined, no need for sub", playerName);
-			PrintToChatAll("Player %s has rejoined; canceling sub vote. Game unpauses in 10 seconds.", playerName);
-			UnpauseGameTimer=CreateTimer(10.0,Timer:UnpauseGame);
+			PrintToChatAll("\x04Canceling sub vote. Game unpauses in 10 seconds.");
+
+			countdownTime=10;
+			CountdownDecrement(INVALID_HANDLE,2);
+
+			CreateTimer(10.0,UnpauseGame); //10 seconds is the time for the rejoining player to get up to Sending Client Info
+			votesToSub=0;
+			votesToWait=0;
 			waitingForPlayer=false;
+			waitingForSubVote=false;
 		}
 	}
 
@@ -568,25 +574,17 @@ public OnClientAuthorized( client, const String:auth[] ) {
 
 }
 
-public OnClientDisconnect_Post( client ) {
-	if ( !pubCompBotKicked ) {
-		pubCompBotKicked = true;
+public OnClientDisconnect(client){
+	if(!IsClientInGame(client) || IsFakeClient(client)){ //don't worry about a sub if the client is a bot or someone not in-game (a nonwhitelisted trying to connect but booted)
 		return;
 	}
-}
-
-public OnClientDisconnect(client){
-	if(hasGameStarted){
-		decl String:playerName[32];
+	if(hasGameStarted && (GetClientTeam(client)==2 || GetClientTeam(client)==3)){//so specs don't count
+		new String:playerName[32];
 		GetClientName(client, playerName, sizeof(playerName));
 
 		new String:currentSteamID[20];
 		currentSteamID="";
 		GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
-
-		if(UnpauseGameTimer!=INVALID_HANDLE){
-			KillTimer(UnpauseGameTimer);
-		}
 
 		if(numberOfPlayersDropped<32){
 			droppedPlayerSteamID[numberOfPlayersDropped]=currentSteamID;
@@ -595,48 +593,85 @@ public OnClientDisconnect(client){
 			LogMessage("List of dropped players is full");
 		}
 
-		LogMessage("Pausing because %s disconnected, steamid %s", playerName, currentSteamID);
-		ServerCommand("sv_pausable 1");//does this work --v ?
-		FakeClientCommand(client,"pause");//this is the only way besides creating a fake client to pause the server as far as I can tell
-		FakeClientCommand(client,"say disconnected - pausing");
-		PrintToChatAll("Type .sub to replace with a sub or .wait to wait 2 minutes for rejoin"); //problem is, players can only say one message
-		//ServerCommand("sv_pausable 0"); //this needs to be delayed or something
-		//don't let anyone pause the server, though
+		LogMessage("Pausing game because %s disconnected, steamid %s", playerName, currentSteamID);
+		ServerCommand("sv_pausable 1"); //no bug here! I made canPause so nobody can pause the game except for the plugin (through a client, for one instant)
+		CreateTimer(0.1,ClientPause);
+
+		PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote", playerName);
+		Format(countdownTextString, sizeof(countdownTextString), "Match is paused.");	
+		for (new i = 1; i <= MaxClients; i++) {
+			if (IsClientInGame(i)){
+				SetHudTextParams(-1.0, 0.4, 1000.0, 255, 255, 255, 255);
+	//can I make 1000.0 into 0.0 for unlimited? can I make it 5.0 without ruining it?
+				ShowSyncHudText(i,countdownText, countdownTextString)
+			}
+		}
+		//even though players can only say one message to be displayed to everyone when the server pauses, all of their say commands are still processed by sm
 
 		waitingForPlayer=true;
-		EndSubVoteTimer=CreateTimer(30.0, Timer:EndSubVote);//30 seconds to vote - add currentSteamID with a datapack :(
+		waitingForSubVote=true;
+
+		CreateTimer(30.0, EndSubVote);//30 seconds to vote - add currentSteamID with a datapack :(
 	}
 }
 
-public Timer:UnpauseGame(Handle:data){
-	LogMessage("Unpausing game");
-	PrintToChatAll("Unpausing game");
-	ServerCommand("sv_pausable 1");
-	FakeClientCommand(1,"pause");//this is the only way besides creating a fake client to pause the server as far as I can tell
-	FakeClientCommand(1,"say disconnected - pausing");
-	//ServerCommand("sv_pausable 0"); //this needs to be delayed or something
+public Action:ClientPause(Handle:timer){
+	new client=1;
+	while (client<MaxClients && !IsClientInGame(client)){
+		client++;
+	}
+	if(IsClientInGame(client)){
+		canPause=true;
+		FakeClientCommand(client,"pause"); //the client with the lowest index (first to join) is forced to enter the "pause" command - otherwise we'd need a bot, which was bleh
+		canPause=false;
+		ServerCommand("sv_pausable 0"); 
+	}else{
+		LogMessage("Nobody is on the server to enter the pause command - this is not good.");
+	}
 }
 
-public Timer:RevoteWait(Handle:data){
-	CreateTimer(30.0,Timer:EndSubVote);//30 seconds to vote
+public Action:UnpauseGame(Handle:timer){
+	ServerCommand("sv_pausable 1");
+	CreateTimer(0.1,ClientPause);
+	LogMessage("Unpausing game");
+}
+
+public Action:RevoteWait(Handle:timer){
+	if(waitingForPlayer==false ||waitingForSubVote==false){
+		return;
+	}
+
+	votesToSub=0;
+	votesToWait=0;
+	CreateTimer(30.0, EndSubVote);//30 seconds to vote - add currentSteamID with a datapack :(
+
 	for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
 		playerSubVote[i]=0;
 	}
-	PrintToChatAll("Type .sub to replace with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote");
+	PrintToChatAll("\x04Type .sub to replace with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote");
 }
 
-public Timer:EndSubVote(Handle:data){ //should have steamid
+public Action:EndSubVote(Handle:timer){ //should have steamid
+	if(waitingForPlayer==false || waitingForSubVote==false){
+		return;
+	}
+
 	if (votesToSub>= votesToWait) { //if there's a tie, call a sub
-		LogMessage("Requesting sub %d-%d",votesToSub,votesToWait);
-		PrintToChatAll("Requesting sub"); //steamid
+		//LogMessage("Requesting sub for %s", currentSteamID);
+		LogMessage("Requesting sub");
+		waitingForSubVote=false;
+		PrintToChatAll("\x04Requesting sub %d-%d",votesToWait,votesToSub);
 	}else{
-		LogMessage("Waiting 2 minutes to revote %d-%d",votesToSub,votesToWait);
-		RevoteWaitTimer=CreateTimer(120.0, Timer:RevoteWait);
-		PrintToChatAll("Waiting for the player for 2 more minutes");
+		//LogMessage("Waiting 2 minutes to revote for %s", currentSteamID);
+		LogMessage("Waiting 2 minutes to revote");
+		
+		CreateTimer(120.0,RevoteWait);
+
+		PrintToChatAll("\x04Waiting 2 minutes to revote %d-%d",votesToSub,votesToWait);
 	}
 }
 
-public OnClientPutInServer( client ) {
+public OnClientPutInServer( client ) { //Nightgunner wrote this - does something with setting up MGE
 	decl String:map[PLATFORM_MAX_PATH];
 	GetCurrentMap( map, PLATFORM_MAX_PATH );
 	if ( StrEqual( map, "mge_training_v7" ) ) {
@@ -708,7 +743,18 @@ public Action:CommandSetWarmupMod( client, args ) {
 	return Plugin_Handled;
 }
 
-public Action:ReadyUnready(client, args) {
+public Action:ClientCommandPause(client,args){ //clients' "pause" command only works when sv_pausable is 1 *and* canPause is true, which it only is for one instant
+	if(canPause==false){
+		return Plugin_Handled;
+	}else{
+		return Plugin_Continue;
+	}
+}
+
+public Action:ReadyUnready(client, args) { //should let this work in team chat too, I guess
+
+//to-do: make this all pretty hud sync text
+
 	decl String:text[192];
 	GetCmdArg(1, text, sizeof(text));
 
@@ -723,7 +769,7 @@ public Action:ReadyUnready(client, args) {
 				didSwitch=true;
 				decl String:playerName[32];
 				GetClientName(client, playerName, sizeof(playerName));
-				PrintToChatAll("Player %s is now ready.", playerName);
+				PrintToChatAll("\x04Player %s is now ready.", playerName);
 			}
 			playerReady[client] = true;
 		}			
@@ -733,7 +779,7 @@ public Action:ReadyUnready(client, args) {
 				didSwitch=true;
 				decl String:playerName[32];
 				GetClientName(client, playerName, sizeof(playerName));
-				PrintToChatAll("Player %s is no longer ready.", playerName);
+				PrintToChatAll("\x04Player %s is no longer ready.", playerName);
 			}
 			playerReady[client] = false;
 		}		
@@ -747,26 +793,30 @@ public Action:ReadyUnready(client, args) {
 			readyCount += playerReady[i] ? 1 : 0;
 		}
 		if (readyCount >= playersNeeded) {
-			gameCountdown = CreateTimer(float(GAME_START_DELAY), Timer:PubCompStartGame);
 			new seconds = GAME_START_DELAY % 60;
 			new minutes = GAME_START_DELAY / 60;
-			PrintToChatAll("%d players are now ready.", readyCount);
+			PrintToChatAll("\x04%d players are now ready.", readyCount);
 			if (minutes == 0) {
-				PrintToChatAll("Game starts in %d seconds.", seconds);
+				PrintToChatAll("\x04Match starts in %d seconds.", seconds);
 			} else if (seconds == 0) {
-				PrintToChatAll("Game starts in %d minutes.", minutes);
+				PrintToChatAll("\x04Match starts in %d minutes.", minutes);
 			} else {
-				PrintToChatAll("Game starts in %d minutes and %d seconds.", minutes, seconds);
+				PrintToChatAll("\x04Match starts in %d minutes and %d seconds.", minutes, seconds);
+			}
+			if(gameCountdown==INVALID_HANDLE){
+				gameCountdown = CreateTimer(float(GAME_START_DELAY), Timer:PubCompStartGame);
 			}
 		} else if (gameCountdown != INVALID_HANDLE) {
 			KillTimer(gameCountdown);
 			gameCountdown = INVALID_HANDLE;
-			PrintToChatAll("Down to %d ready player%s.  Countdown canceled.", readyCount, readyCount == 1 ? "" : "s");
+			PrintToChatAll("\x04Down to %d ready player%s.  Countdown canceled.", readyCount, readyCount == 1 ? "" : "s");
+		}else{
+			PrintToChatAll("\x04%d players are now ready.", readyCount);
 		}	
 
 	//sub wait vote
 	}else  if (strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0){
-		if(!hasGameStarted || waitingForPlayer || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){
+		if(!hasGameStarted || !waitingForPlayer || !(GetClientTeam(client)==2 || GetClientTeam(client)==3) || !waitingForSubVote){
 			return Plugin_Continue;
 		}
 		new bool:didSwitch=false;
@@ -775,7 +825,7 @@ public Action:ReadyUnready(client, args) {
 				didSwitch=true;
 				decl String:playerName[32];
 				GetClientName(client, playerName, sizeof(playerName));
-				PrintToChatAll("Player %s has voted for a sub.", playerName);
+				PrintToChatAll("\x04Player %s has voted for a sub.", playerName);
 			}
 			if(didSwitch==true){
 				playerSubVote[client] = 1;
@@ -786,7 +836,7 @@ public Action:ReadyUnready(client, args) {
 				didSwitch=true;
 				decl String:playerName[32];
 				GetClientName(client, playerName, sizeof(playerName));
-				PrintToChatAll("Player %s has voted to wait.", playerName);
+				PrintToChatAll("\x04Player %s has voted to wait.", playerName);
 			}
 			if(didSwitch==true){
 				playerSubVote[client] = 2;
@@ -800,16 +850,13 @@ public Action:ReadyUnready(client, args) {
 	return Plugin_Continue;
 }
 
+public Action:OnGetGameDescription(String:gameDesc[64])
+{
+	Format(gameDesc, sizeof(gameDesc), "PubComp Match v%s",PLUGIN_VERSION);
+	return Plugin_Changed;
+}
+
 public Timer:PubCompStartGame(Handle:data) {
-        // Tell node we're starting a game here.  Node should already
-        // have the steamids of the players in the game, and their map
-        // and position preferences will be entered through the web,
-        // so it will have those as well.  So we don't have to send
-        // anything except a message that we're starting the game.
-        //
-        // It should send us (through rcon console commands) team
-        // assignments and position assignments.
-        LogMessage( "PubComp: Requesting team and position assignments..." );
         ServerCommand("mp_tournament 1");
         ServerCommand(warmupActivationCommands[activeWarmupMode][DISABLE]);
 
@@ -823,17 +870,43 @@ public Timer:PubCompStartGame(Handle:data) {
         CreateTimer(1.0, Timer:PubCompStartGame2);
 }
 
+public Action:CountdownDecrement(Handle:timer, any:idNumber){
+	if(countdownTime>=1){
+		CreateTimer(1.0,CountdownDecrement,idNumber);
+		if(idNumber==1){
+	//add if here for if countdownTime==1 then say second (not secondS)
+			Format(countdownTextString, sizeof(countdownTextString), "Match starts in %d seconds", countdownTime );
+		}else if(idNumber==2){ //the hud text does not show up if it is started when the game is paused (but it does continue into the pause, which I'm using)
+	//add if here for if countdownTime==1 then say second (not secondS)
+			Format(countdownTextString, sizeof(countdownTextString), "Match unpauses in %d seconds", countdownTime );
+		}
+		//the following is redundant but sometimes necessary the first time because players lose the message when they respawn
+		for (new i = 1; i <= MaxClients; i++) {
+			if (IsClientInGame(i)){
+				SetHudTextParams(-1.0, 0.4, 1.0, 255, 255, 255, 255);
+				ShowSyncHudText(i,countdownText, countdownTextString)
+			}
+		}
+		countdownTime--;
+	}else{
+		countdownTime=0;
+	}
+}
+
 public Timer:PubCompStartGame2(Handle:data) {
-        PutPlayersOnClass();
-        PrintCenterTextAll("Setup Classes.  Game will start in %d seconds.", SETUP_CLASSES_TIME);
-        LogToGame("Setup Classes.  Game will start in %d seconds.", SETUP_CLASSES_TIME);
+	PutPlayersOnClass();
+	LogMessage("Setup classes. Game will start in %d seconds.", SETUP_CLASSES_TIME);
+	PrintCenterTextAll("Setup Classes.");
+	countdownTime=SETUP_CLASSES_TIME;
+	CountdownDecrement(INVALID_HANDLE,1);
+
 //should also stop players from switching teams - mp_teams_unbalance_limit or something
-        ServerCommand("mp_restartgame %d", SETUP_CLASSES_TIME); //should say "Game is Live" now, not one second after.. why does esea do it with a delay? seems stupid.
-        CreateTimer(float(SETUP_CLASSES_TIME + 1), Timer:PubCompStartGame3);
+	ServerCommand("mp_restartgame %d", SETUP_CLASSES_TIME); //should say "Game is Live" now, not one second after.. why does esea do it with a delay? seems stupid.
+	CreateTimer(float(SETUP_CLASSES_TIME) + 1.0, Timer:PubCompStartGame3); //I want this to be 0, but it doesn't show up at the right time! bleh, maybe that's why ^
 }
 
 public Timer:PubCompStartGame3(Handle:data) {
-        ExecuteGameCommands();
-        LogMessage("Match starting.")
-        PrintCenterTextAll("----Game is LIVE----");
+	ExecuteGameCommands();
+	LogMessage("Match starting.")
+	PrintCenterTextAll("----Game is LIVE----");
 }
