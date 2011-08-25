@@ -57,12 +57,13 @@ new Handle:showReadyHudTimer=INVALID_HANDLE;
 
 new Handle:countdownText=INVALID_HANDLE;
 new countdownTime=0;
-new String:countdownTextString[256]; //the countdown messages can be at most 255 characters long. I've set this arbitrarily.
+new String:countdownTextString[512]; //the countdown messages can be at most 511 characters long. I've set this arbitrarily.
 new Handle:readyText=INVALID_HANDLE;
 new String:readyTextString[256];
 new String:notReadiedPlayersString[256];
 new String:readiedPlayersString[256];
 new String:notConnectedPlayersString[256];
+new String:specReadiedPlayersString[256];
 
 new votesToSub=0;
 new votesToWait=0;
@@ -133,6 +134,7 @@ public Action:CommandResetGameSetup(client, args){
 		LogMessage( "Client %d is not permitted to reset the game setup.", client );
 		return Plugin_Stop;
 	}
+//to-do: reset every single timer; cancel every hud text; and unpause the game (if it's paused)
 	//resets steamids, team, class, positions, class limits, game commands, and votes
 	//warmup mod is just overridden and therefore doesn't need to be reset
 	numberOfPlayersAddSteam=0;
@@ -153,6 +155,7 @@ public Action:CommandResetGameSetup(client, args){
 	waitingToStartGame=false;
 	readyTextString="";
 	notReadiedPlayersString="";
+	specReadiedPlayersString="";
 	readiedPlayersString="";
 	notConnectedPlayersString="";
 	countdownTextString="";
@@ -225,10 +228,13 @@ public Action:CommandLetPlayersReady(client,args){
 	canPlayersReady=true;
 	hasGameStarted=false;
 	waitingToStartGame=false;
+
+//mp_timelimit 0 (so the map can't change while they're waiting to ready)
+
+//restore to warmup mode? no, don't.
+
 	PrintToChatAll("\x04You may now type .ready and start the game.");
-
 	UpdateReadyHud();
-
 	return Plugin_Handled;
 }
 
@@ -244,17 +250,40 @@ public UpdateReadyHud()
 	}
 
 	notReadiedPlayersString="";
+	specReadiedPlayersString="";
 	readiedPlayersString="";
 	notConnectedPlayersString="";
 	new String:playerName[MAX_NAME_LENGTH];
 	for(new i=1; i<=MaxClients; i++){//this would also count specs.. I need to figure out how specs work into everything pre- and post- match
 		if(IsClientInGame(i)){
+
+
+			new String:currentSteamID[20];
+			currentSteamID="";
+			GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
+			new bool:isSpec;
+			new index=-1;
+			do{
+				index++;
+			}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+			if(index==numberOfPlayersAddSteam){
+				LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+			}else if(teamForPlayer[index]==1){ //if this player's team is spec
+				isSpec=true;
+			}else if(teamForPlayer[index]!=1){
+				isSpec=false;
+			}
+
+
 			GetClientName( i, playerName, MAX_NAME_LENGTH );
-			if(playerReady[i]==true){
+			if(isSpec){
+				StrCat(specReadiedPlayersString,sizeof(specReadiedPlayersString),playerName);
+				StrCat(specReadiedPlayersString,sizeof(specReadiedPlayersString),"\n  ");
+			} else if(playerReady[i]==true){
 				StrCat(readiedPlayersString,sizeof(readiedPlayersString),playerName);
 				StrCat(readiedPlayersString,sizeof(readiedPlayersString),"\n  ");
 
-			}else{
+			}else if(playerReady[i]==false){
 				StrCat(notReadiedPlayersString,sizeof(notReadiedPlayersString),playerName);
 				StrCat(notReadiedPlayersString,sizeof(notReadiedPlayersString),"\n  ");
 			}
@@ -271,7 +300,17 @@ public UpdateReadyHud()
 				currentSteamID="x";//not null
 			}
 		}while(a<MaxClients && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
-		if (a==MaxClients){//then client not found
+
+
+		new bool:isSpec;
+		if(teamForPlayer[i]==1){ //if this player's team is spec
+			isSpec=true;
+		}else {
+			isSpec=false;
+		}
+
+
+		if (a==MaxClients && isSpec==false){//then client not in the server (and not a spec)
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),playerNames[i]);
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),"\n  ");
 		}	
@@ -294,7 +333,7 @@ public Action:ShowReadyHud(Handle:timer, any:idNumber){
 			}
 		}
 	}else if(idNumber==1){
-		Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
+		Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpec:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
 		for (new i = 1; i <= MaxClients; i++) {
 			if (IsClientInGame(i)){
 				SetHudTextParams(0.1, 0.1, 1.0, 0, 255, 0, 255);
@@ -358,7 +397,7 @@ public Action:CommandSetClassLimit(client,args){
 		return;
 	}
 	new String:limitBuffer[3];
-	GetCmdArgString(limitBuffer,sizeof(limitBuffer));
+	GetCmdArg(1,limitBuffer,sizeof(limitBuffer));
 	new limit=StringToInt(limitBuffer);
 	classLimit[numberOfClassLimit]=limit;
 	numberOfClassLimit++;
@@ -376,6 +415,8 @@ public PutPlayersOnTeam()
 					if(teamForPlayer[a]==-1){
 						LogMessage("This player was not assigned a team: steamid is %s.",currentSteamID);
 						return;
+					}else if(teamForPlayer[a]==1){
+						PrintToChat(i,"\x04You are being moved to spectate.");
 					} else if(teamForPlayer[a]==2){
 						PrintToChat(i,"\x04You are being moved to the red team.");
 					}else if(teamForPlayer[a]==3){
@@ -398,6 +439,18 @@ public PutPlayersOnClass()
 			currentSteamID="";
 			if(IsClientConnected(i)){
 				GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
+
+				new index=-1;
+				do{
+					index++;
+				}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+				if(index==numberOfPlayersAddSteam){
+					LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+					return;
+				}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not change his class
+					return;
+				}
+
 				if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
 					switch (classForPlayer[a])
 					{
@@ -406,6 +459,10 @@ public PutPlayersOnClass()
 							LogMessage("Player with steamid %s was not given a class.", currentSteamID);
 							return;
 
+						}
+						case 0:
+						{
+							return; //if spec; this should never be called
 						}
 						case 1:
 						{
@@ -458,7 +515,7 @@ public PutPlayersOnClass()
 							className="proro";
 						}
 					}
-					TF2_SetPlayerClass(i, newClass, false, true);
+					TF2_SetPlayerClass(i, newClass, true, true); //third was false, should be true - it should only be false if I'm calling this on a respawn player hook (which I don't)
 					PrintToChat(i,"\x04Your class is being changed to %s.",className);
 				}
 			}
@@ -577,12 +634,12 @@ public Action:Event_RoundEnd(Handle: event, const String:name[], bool:dontBroadc
 		GetMapTimeLeft(timeleft);
 		Format(timeleftString, sizeof(timeleftString), "%d:%02d", (timeleft / 60), (timeleft % 60));
 		PrintToChatAll("\x04Red team won the round, score is %d-%d. %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
-		LogMessage("\x04Red team won the round, score is %d-%d. %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
+		LogMessage("Red team won the round, score is %d-%d. %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
 	}else if(GetEventInt(event,"team")==3){
 		GetMapTimeLeft(timeleft);
 		Format(timeleftString, sizeof(timeleftString), "%d:%02d", (timeleft / 60), (timeleft % 60));
 		PrintToChatAll("\x04Blue team won the round, score is %d-%d. %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
-		LogMessage("\x04Blue team won the round, score is %d-%d. %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
+		LogMessage("Blue team won the round, score is %d-%d. %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
 	}
 }
 
@@ -641,6 +698,10 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 		do{
 			i++;
 		}while(i<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
+		if(i==numberOfPlayersAddSteam){
+			LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+			return Plugin_Handled;
+		}
 		new shouldTeam=teamForPlayer[i];
 		if(newTeam!=shouldTeam){
 			ChangeClientTeam(client,shouldTeam);
@@ -655,6 +716,7 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 //I need to have the same code for playerspawn and playerteam
 //Bug: under same circumstances, the player's viewmodel is messed up until the final restart. This is related to the above comment.
 //TF2_SetPlayerClass(user,oldClass,true,true); //third should be false if player died, maybe..
+//Fixed?? ^^^ I think so.
 
 //Bug: the text says "*You will respawn as [class]" immediately after "You cannot play [class]" when outside the spawn room' - we should block that message for aesthetics
 
@@ -685,7 +747,7 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 				}
 				if(class==TFClass_Scout){
 					if(IsFull(team,1,class)){
-						TF2_SetPlayerClass(user,oldClass,true,true);
+						TF2_SetPlayerClass(user,oldClass,true,true);//CORRECT: the third argument should be true in this section
 					//unfortunately, it seems setting the class to the old class is all I can do - this hook is apparently after the player has changed class, not before.
 					//if I can find an event that's fired before - like jointeam instead of player_team - I might be able to do this without respawning the same class. join_class doesn't work
 					//the only bad thing about this is that the player respawns as the same class in the spawn room; no real problem or anything.
@@ -784,8 +846,21 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		KickClient( client, "Please join from the PubComp web interface" );
 	}
 
-	//resumes the game if the player is on the dropped list
 	new String:currentSteamID[20];
+	currentSteamID="";
+	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		return;
+	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
+		return;
+	}
+
+	//resumes the game if the player is on the dropped list
 	currentSteamID="";
 	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
 	new indexFoundAt=-1;
@@ -841,6 +916,21 @@ public OnClientDisconnect(client){
 	if(!IsClientInGame(client) || IsFakeClient(client)){ //don't worry about a sub if the client is a bot or someone not in-game (a nonwhitelisted trying to connect but booted)
 		return;
 	}
+
+	new String:currentSteamID[20];
+	currentSteamID="";
+	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		return;
+	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
+		return;
+	}
+
 	if(playerReady[client]==true && !hasGameStarted){//if a readied player leaves before the game starts, unready him
 		playerReady[client]=false;
 		decl String:playerName[32];
@@ -871,7 +961,7 @@ public OnClientDisconnect(client){
 		new String:playerName[32];
 		GetClientName(client, playerName, sizeof(playerName));
 
-		new String:currentSteamID[20];
+		//new String:currentSteamID[20];
 		currentSteamID="";
 		GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
 
@@ -910,7 +1000,7 @@ public OnClientDisconnect(client){
 		//find the player's "index" in my arrays
 		currentSteamID="";
 		GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
-		new index=-1;
+		index=-1;
 		do{
 			index++;
 		}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
@@ -982,12 +1072,14 @@ public Action:UnpauseGame(Handle:timer){
 		CreateTimer(0.1,ClientPause);
 		LogMessage("Unpausing game");
 		isPaused=false;
+		//load antiflood if it's unloaded
 	}else{
 		LogMessage("Will not unpause the game, it is already paused.");
 	}
 }
 
 public OnClientPutInServer( client ) { //Nightgunner wrote this - does something with setting up MGE
+	//maybe should not fake the client command or whatever if the player is a spec
 	decl String:map[PLATFORM_MAX_PATH];
 	GetCurrentMap( map, PLATFORM_MAX_PATH );
 	if ( StrEqual( map, "mge_training_v7" ) ) {
@@ -1025,7 +1117,10 @@ public ExecuteGameCommands() {
 	for ( new i = 0; i < commandCount; i++ ) {
 		ServerCommand(gameCommands[i]);
 	}
-	commandCount = 0;
+
+	//commandCount = 0;
+	//let's instead reset the commandcount only on reset
+	//resetting the command count to zero stops pubcomp_let_players_ready from keeping the game commands - commenting out the 0 here should fix it
 }
 
 
@@ -1081,9 +1176,23 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		hasPlayerSaid[client]=true; //make this an array for clients
 	}
 
+	new String:currentSteamID[20];
+	currentSteamID="";
+	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		return Plugin_Continue;
+	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not let him vote
+		return Plugin_Continue;
+	}
+
 	// ready unready vote
 	if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0) {
-		if(hasGameStarted || !canPlayersReady || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){
+		if(hasGameStarted || !canPlayersReady || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){//you can only ready/vote if you're on red or blue team
 			return Plugin_Continue;
 		}
 		new bool:didSwitch=false;
@@ -1135,10 +1244,10 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 				}
 				countdownTime=10;
 				CountdownDecrement(INVALID_HANDLE,3);
-				if(gameCountdown==INVALID_HANDLE){
-					waitingToStartGame=true;
-					gameCountdown = CreateTimer(float(GAME_START_DELAY), Timer:PubCompStartGame);
-				}
+				//if(gameCountdown==INVALID_HANDLE){//<--unnecessary
+				waitingToStartGame=true;
+				gameCountdown = CreateTimer(float(GAME_START_DELAY), Timer:PubCompStartGame);
+				//}//<--unnecessary
 			}
 		} else if (gameCountdown != INVALID_HANDLE) {
 			waitingToStartGame=false;
@@ -1276,6 +1385,7 @@ public Timer:PubCompStartGame2(Handle:data) {
 
 public Timer:PubCompStartGame3(Handle:data) {
 	ServerCommand("mp_tournament 1");
+	ShowReadyHud(INVALID_HANDLE,0);
 	ExecuteGameCommands();
 	LogMessage("Match starting.")
 	Format(countdownTextString, sizeof(countdownTextString),"--- Match is LIVE ---");
