@@ -41,6 +41,7 @@ new classForPlayer[32];
 new positionsForPlayer[32][9];
 new classLimit[10];
 
+new bool:isMentor[32];
 new bool:hasGameStarted=false;
 new bool:canPlayersReady=false;
 new waitingForPlayer=0; //number of missing players - somewhat redundant with numberOfPlayersDropped
@@ -54,6 +55,8 @@ new bool:playerReady[MAXPLAYERS+1];
 new playerSubVote[MAXPLAYERS+1];
 new Handle:gameCountdown = INVALID_HANDLE;
 new Handle:showReadyHudTimer=INVALID_HANDLE;
+new Handle:StartGame2Timer=INVALID_HANDLE;
+new Handle:StartGame3Timer=INVALID_HANDLE;
 
 new Handle:countdownText=INVALID_HANDLE;
 new countdownTime=0;
@@ -82,6 +85,7 @@ new String:warmupActivationCommands[NUM_WARMUP_MODES + 1][2][MAX_COMMAND_LENGTH]
 	{"sm plugins load mgemod", "sm plugins unload mgemod"}
 };
 
+
 new playersNeeded = 1; //server should set this; make a command or cvar
 
 public OnPluginStart() {
@@ -89,8 +93,9 @@ public OnPluginStart() {
 	RegConsoleCmd("pubcomp_set_player_class", CommandSetPlayerClass, "",FCVAR_PLUGIN); // 1 is scout, ... , 9 is spy
 	RegConsoleCmd("pubcomp_set_player_positions", CommandSetPlayerPositions, "", FCVAR_PLUGIN); // 2-5-8 is soldier, heavy and sniper; include main class
 	RegConsoleCmd("pubcomp_set_class_limit", CommandSetClassLimit, "",FCVAR_PLUGIN); //must be entered in order: scout, soldier, pyro, ... spy (total of 9 times)
-	RegConsoleCmd("pubcomp_add_steamid", CommandAddSteamID, "", FCVAR_PLUGIN );//add steamid to the whitelist
-	RegConsoleCmd("pubcomp_add_name",CommandAddName,"",FCVAR_PLUGIN);//add a player's name
+	RegConsoleCmd("pubcomp_add_steamid", CommandAddSteamID, "", FCVAR_PLUGIN ); //add steamid to the whitelist
+	RegConsoleCmd("pubcomp_add_name",CommandAddName,"",FCVAR_PLUGIN); //add a player's name
+	RegConsoleCmd("pubcomp_set_mentor",CommandSetMentor,"",FCVAR_PLUGIN); //designate a player to be a mentor
 	RegConsoleCmd("pubcomp_add_game_command", CommandAddGameCommand, "", FCVAR_PLUGIN);//add rcon command to be executed upon match start
 	RegConsoleCmd("pubcomp_set_warmup_mod", CommandSetWarmupMod, "", FCVAR_PLUGIN);//set warmup mod (NONE, SOAP, or MGE)
 	RegConsoleCmd("pubcomp_reset_game_setup", CommandResetGameSetup, "",FCVAR_PLUGIN);//resets steamids, team, class, positions, class limits, and game commands
@@ -107,14 +112,10 @@ public OnPluginStart() {
 	HookEvent( "teamplay_round_win", Event_RoundEnd); //called when a team wins a round (including stalemates)
 	countdownText = CreateHudSynchronizer();
 	readyText = CreateHudSynchronizer();
+	ServerCommand("pubcomp_reset_game_setup"); 
+//to-do: round stalemate doesn't fire anything (it was 0-0 and the round time ran out, map time was fine)
 
-		//ServerCommand("mp_waitingforplayers_cancel 1"); //eventually I should find a nice place for this for soap dm; totally unimportant though
-
-	ServerCommand("mp_tournament 0");//just in case
-	ServerCommand("mp_timelimit 0"); //just in case
-
-	ServerCommand("pubcomp_reset_game_setup"); //I'll rewrite this line so as to call the command internally.. /lazy
-	//CommandResetGameSetup();
+	//ServerCommand("mp_waitingforplayers_cancel 1"); //eventually I should find a nice place for this for soap dm; totally unimportant though
 }
 
 
@@ -134,8 +135,14 @@ public Action:CommandResetGameSetup(client, args){
 		LogMessage( "Client %d is not permitted to reset the game setup.", client );
 		return Plugin_Stop;
 	}
-//to-do: reset every single timer; cancel every hud text; and unpause the game (if it's paused)
-	//resets steamids, team, class, positions, class limits, game commands, and votes
+
+	if(hasGameStarted==true){
+		ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
+		PrintToChatAll("\x04Entering warmup mode.");
+		hasGameStarted=false;
+	}
+
+	//resets steamids, team, class, positions, class limits, game commands, and votes; and unpauses the game if paused
 	//warmup mod is just overridden and therefore doesn't need to be reset
 	numberOfPlayersAddSteam=0;
 	numberOfPlayersNames=0;
@@ -150,6 +157,7 @@ public Action:CommandResetGameSetup(client, args){
 	votesToSub=0;
 	votesToWait=0;
 	waitingForPlayer=0;
+	countdownTime=0;
 	waitingForSubVote=false;
 	canPause=false;
 	waitingToStartGame=false;
@@ -159,13 +167,27 @@ public Action:CommandResetGameSetup(client, args){
 	readiedPlayersString="";
 	notConnectedPlayersString="";
 	countdownTextString="";
-
-	gameCountdown = INVALID_HANDLE;
-	showReadyHudTimer=INVALID_HANDLE;
-
+	canPlayersReady=false;
+	if(gameCountdown!=INVALID_HANDLE){
+		KillTimer(gameCountdown);
+		gameCountdown = INVALID_HANDLE;
+	}
+	if(showReadyHudTimer!=INVALID_HANDLE){
+		KillTimer(showReadyHudTimer);
+		showReadyHudTimer=INVALID_HANDLE;
+	}
+	if(StartGame2Timer!=INVALID_HANDLE){
+		KillTimer(StartGame2Timer);
+		StartGame2Timer=INVALID_HANDLE;
+	}
+	if(StartGame3Timer!=INVALID_HANDLE){
+		KillTimer(StartGame3Timer);
+		StartGame3Timer=INVALID_HANDLE;
+	}
 	for(new i=0; i<32; i++){
 		steamIDforTeamsAndClasses[i][0]=0; //steamid
 		droppedPlayerSteamID[i][0]=0; //list of dropped players
+		isMentor[i]=false;
 		playerNames[i][0]=0; //name
 		teamForPlayer[i]=-1; //team
 		classForPlayer[i]=-1; //class
@@ -180,12 +202,23 @@ public Action:CommandResetGameSetup(client, args){
 		gameCommands[i][0]=0;
 	}
 	commandCount = 0;
-	for(new i=1; i<MAXPLAYERS+1; i++){ //lets the players ready up, to start the new match
-		playerReady[i]=false;
+	for(new i=1; i<MAXPLAYERS+1; i++){ 
+		playerReady[i]=false; //lets the players ready up, to start the new match
+		playerSubVote[i]=0; //shows players haven't voted about a sub
 	}
-	for(new i=1; i<MAXPLAYERS+1; i++){ //shows players haven't voted about a sub
-		playerSubVote[i]=0;
+
+	if(isPaused==true){
+		ServerCommand("sv_pausable 1");
+		CreateTimer(0.1,ClientPause);
+		LogMessage("Unpausing game");
+		isPaused=false;
 	}
+
+	ServerCommand("mp_tournament 0");
+	ServerCommand("mp_timelimit 0"); //so map never changes on its own
+	ServerCommand("mp_winlimit 0");//
+
+	LogMessage("Game setup cleared.");
 	return Plugin_Handled;
 }
 
@@ -220,21 +253,71 @@ public Action:CommandLetPlayersReady(client,args){
 		LogMessage( "Client %d is not permitted to let players ready.", client );
 		return Plugin_Stop;
 	}
-	for(new i=1; i<MAXPLAYERS+1; i++){ //lets the players ready up, to start the new match
-		playerReady[i]=false;
+
+	
+	ServerCommand("mp_tournament 0");
+	ServerCommand("mp_timelimit 0"); //so map never changes on its own
+	ServerCommand("mp_winlimit 0");//
+
+	if(hasGameStarted==true){
+		ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
+		PrintToChatAll("\x04Entering warmup mode.");
+		hasGameStarted=false;
 	}
-	showReadyHudTimer=INVALID_HANDLE;
-	gameCountdown = INVALID_HANDLE;
-	canPlayersReady=true;
-	hasGameStarted=false;
+
+	for(new i=1; i<MAXPLAYERS+1; i++){ 
+		playerReady[i]=false; //lets the players ready up, to start the new match
+		playerSubVote[i]=0; //shows players haven't voted about a sub
+	}
+	for (new sayClient=1; sayClient<=MaxClients; sayClient++){
+		hasPlayerSaid[sayClient]=false;
+	}
+	if(gameCountdown != INVALID_HANDLE){
+		KillTimer(gameCountdown);
+		gameCountdown = INVALID_HANDLE;
+	}
+	if(showReadyHudTimer != INVALID_HANDLE){
+		KillTimer(showReadyHudTimer);
+		showReadyHudTimer=INVALID_HANDLE;
+	}
+	if(StartGame2Timer!=INVALID_HANDLE){
+		KillTimer(StartGame2Timer);
+		StartGame2Timer=INVALID_HANDLE;
+	}
+	if(StartGame3Timer!=INVALID_HANDLE){
+		KillTimer(StartGame3Timer);
+		StartGame3Timer=INVALID_HANDLE;
+	}
+
 	waitingToStartGame=false;
+	waitingForSubVote=false;
+	votesToSub=0;
+	votesToWait=0;
+	canPause=false;
+	waitingForPlayer=0;
+	countdownTime=0;
 
-//mp_timelimit 0 (so the map can't change while they're waiting to ready)
 
-//restore to warmup mode? no, don't.
 
-	PrintToChatAll("\x04You may now type .ready and start the game.");
+
+
+	for(new i=0; i<32; i++){
+		droppedPlayerSteamID[i][0]=0;
+	}
+
+	if(isPaused==true){
+		ServerCommand("sv_pausable 1");
+		CreateTimer(0.1,ClientPause);
+		LogMessage("Unpausing game");
+		isPaused=false;
+	}
+
+
+	canPlayersReady=true;
+
 	UpdateReadyHud();
+	PrintToChatAll("\x04You may now type .ready and start the game.");
+	LogMessage("Players may now ready.");
 	return Plugin_Handled;
 }
 
@@ -267,7 +350,7 @@ public UpdateReadyHud()
 				index++;
 			}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 			if(index==numberOfPlayersAddSteam){
-				LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+				LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 			}else if(teamForPlayer[index]==1){ //if this player's team is spec
 				isSpec=true;
 			}else if(teamForPlayer[index]!=1){
@@ -333,6 +416,7 @@ public Action:ShowReadyHud(Handle:timer, any:idNumber){
 			}
 		}
 	}else if(idNumber==1){
+	//to-do: don't show the word "spec" if there aren't any
 		Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpec:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
 		for (new i = 1; i <= MaxClients; i++) {
 			if (IsClientInGame(i)){
@@ -343,6 +427,28 @@ public Action:ShowReadyHud(Handle:timer, any:idNumber){
 		showReadyHudTimer=CreateTimer(1.0,ShowReadyHud,1);
 	}
 
+}
+
+public Action:CommandSetMentor(client, args){
+	if ( client != 0 ) {
+		LogMessage( "Client %d is not permitted to set mentors.", client );
+		return Plugin_Stop;
+	}
+	new String:currentSteamID[20];
+	GetCmdArg(1,currentSteamID,sizeof(currentSteamID));
+	
+	new i=-1;
+	do{
+		i++;
+	}while(i<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
+	if(i==numberOfPlayersAddSteam){
+		LogMessage("Cannot find player with steamid %s on the whitelist to set as mentor.", currentSteamID);
+	}else{
+		LogMessage("Player with steamid %s is set as a mentor.", currentSteamID);
+		isMentor[i]=true;	
+	}
+
+	return Plugin_Handled;
 }
 
 
@@ -415,7 +521,7 @@ public PutPlayersOnTeam()
 					if(teamForPlayer[a]==-1){
 						LogMessage("This player was not assigned a team: steamid is %s.",currentSteamID);
 						return;
-					}else if(teamForPlayer[a]==1){
+					}else if(teamForPlayer[a]==1){ //prints this even when you don't change team - might want to remove in that situation
 						PrintToChat(i,"\x04You are being moved to spectate.");
 					} else if(teamForPlayer[a]==2){
 						PrintToChat(i,"\x04You are being moved to the red team.");
@@ -445,7 +551,7 @@ public PutPlayersOnClass()
 					index++;
 				}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 				if(index==numberOfPlayersAddSteam){
-					LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+					LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 					return;
 				}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not change his class
 					return;
@@ -516,7 +622,7 @@ public PutPlayersOnClass()
 						}
 					}
 					TF2_SetPlayerClass(i, newClass, true, true); //third was false, should be true - it should only be false if I'm calling this on a respawn player hook (which I don't)
-					PrintToChat(i,"\x04Your class is being changed to %s.",className);
+					PrintToChat(i,"\x04Your class is being changed to %s.",className); //prints this even when you don't change class - might want to remove in that situation
 				}
 			}
 		}
@@ -599,7 +705,7 @@ public Action:CommandReplaceSteamIDSub(client, args){
 	new String:newPlayerName[MAX_NAME_LENGTH];
 
 	if(i==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist", oldAndNewSteamids[0]);
+		LogMessage("Cannot find player with steamid %s on the whitelist.", oldAndNewSteamids[0]);
 	}else{
 
 		oldPlayerName=playerNames[i];
@@ -607,7 +713,7 @@ public Action:CommandReplaceSteamIDSub(client, args){
 		newPlayerName=playerNames[i];
 
 		steamIDforTeamsAndClasses[i]=oldAndNewSteamids[1]
-		LogMessage( "Replaced %s of steamid %s with %s of steamid %s on the whitelist",oldPlayerName,oldAndNewSteamids[0],newPlayerName,oldAndNewSteamids[1]);
+		LogMessage( "Replaced %s of steamid %s with %s of steamid %s on the whitelist.",oldPlayerName,oldAndNewSteamids[0],newPlayerName,oldAndNewSteamids[1]);
 	}
 
 	i=-1;
@@ -616,10 +722,10 @@ public Action:CommandReplaceSteamIDSub(client, args){
 	}while(i<numberOfPlayersDropped && !StrEqual(oldAndNewSteamids[0],droppedPlayerSteamID[i]));
 
 	if(i==numberOfPlayersDropped){
-		LogMessage("Cannot find player with steamid %s on the dropped players list", oldAndNewSteamids[0]);
+		LogMessage("Cannot find player with steamid %s on the dropped players list.", oldAndNewSteamids[0]);
 	}else{
 		droppedPlayerSteamID[i]=oldAndNewSteamids[1];
-		LogMessage( "Replaced %s of steamid %s with %s of steamid %s on the dropped players list",oldPlayerName,oldAndNewSteamids[0],newPlayerName,oldAndNewSteamids[1]);
+		LogMessage( "Replaced %s of steamid %s with %s of steamid %s on the dropped players list.",oldPlayerName,oldAndNewSteamids[0],newPlayerName,oldAndNewSteamids[1]);
 		PrintToChatAll("\x04A sub, %s, is on the way for %s!",newPlayerName,oldPlayerName); //name
 	}
 
@@ -633,13 +739,13 @@ public Action:Event_RoundEnd(Handle: event, const String:name[], bool:dontBroadc
 	if(GetEventInt(event, "team")==2){
 		GetMapTimeLeft(timeleft);
 		Format(timeleftString, sizeof(timeleftString), "%d:%02d", (timeleft / 60), (timeleft % 60));
-		PrintToChatAll("\x04Red team won the round, score is %d-%d. %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
-		LogMessage("Red team won the round, score is %d-%d. %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
+		PrintToChatAll("\x04Red team won the round, score is %d-%d with %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
+		LogMessage("Red team won the round, score is %d-%d with %s remaining.",GetTeamScore(2),GetTeamScore(3),timeleftString);
 	}else if(GetEventInt(event,"team")==3){
 		GetMapTimeLeft(timeleft);
 		Format(timeleftString, sizeof(timeleftString), "%d:%02d", (timeleft / 60), (timeleft % 60));
-		PrintToChatAll("\x04Blue team won the round, score is %d-%d. %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
-		LogMessage("Blue team won the round, score is %d-%d. %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
+		PrintToChatAll("\x04Blue team won the round, score is %d-%d with %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
+		LogMessage("Blue team won the round, score is %d-%d with %s remaining.",GetTeamScore(3),GetTeamScore(2),timeleftString);
 	}
 }
 
@@ -664,6 +770,7 @@ public Timer:EndTournamentGame(Handle:data){
 	ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
 	PrintToChatAll("\x04Entering warmup mode.");
 	ServerCommand("mp_timelimit 0"); //so map never changes on its own
+	ServerCommand("mp_winlimit 0");//
 	hasGameStarted=false;
 }
 
@@ -689,7 +796,7 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 		}
 		new oldTeam=GetClientTeam(client)
 		if(oldTeam==newTeam){//I don't think this can ever happen, but better safe than sorry
-			return Plugin_Continue; //_Handled?
+			return Plugin_Continue;
 		}
 		new String:currentSteamID[20];
 		currentSteamID="";
@@ -699,7 +806,7 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 			i++;
 		}while(i<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
 		if(i==numberOfPlayersAddSteam){
-			LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+			LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 			return Plugin_Handled;
 		}
 		new shouldTeam=teamForPlayer[i];
@@ -747,7 +854,8 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 				}
 				if(class==TFClass_Scout){
 					if(IsFull(team,1,class)){
-						TF2_SetPlayerClass(user,oldClass,true,true);//CORRECT: the third argument should be true in this section
+						TF2_SetPlayerClass(user,oldClass,true,true);//CORRECT (NO): the third argument should be true in this section
+	//to-do: UPDATE: viewmodels are way screwed up when switched from one class on spec to another class on a team
 					//unfortunately, it seems setting the class to the old class is all I can do - this hook is apparently after the player has changed class, not before.
 					//if I can find an event that's fired before - like jointeam instead of player_team - I might be able to do this without respawning the same class. join_class doesn't work
 					//the only bad thing about this is that the player respawns as the same class in the spawn room; no real problem or anything.
@@ -854,7 +962,7 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 	if(index==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 		return;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
 		return;
@@ -883,7 +991,7 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		}
 		new String:playerName[MAX_NAME_LENGTH];
 		GetClientName( client, playerName, MAX_NAME_LENGTH );
-		LogMessage("Player %s has rejoined, no need for sub", playerName);
+		LogMessage("Player %s has rejoined, no need for sub.", playerName);
 		PrintToChatAll("\x04Canceling sub vote for %s.", playerName);
 	}
 
@@ -925,7 +1033,7 @@ public OnClientDisconnect(client){
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 	if(index==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 		return;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
 		return;
@@ -973,7 +1081,7 @@ public OnClientDisconnect(client){
 		}
 
 		if(isPaused==false){
-			LogMessage("Pausing game because %s disconnected, steamid %s", playerName, currentSteamID);
+			LogMessage("Pausing game because %s disconnected, steamid %s.", playerName, currentSteamID);
 			//unload antiflood if it's loaded
 			ServerCommand("sv_pausable 1"); //no bug here! I made canPause so nobody can pause the game except for the plugin (through a client, for one instant)
 			CreateTimer(0.1,ClientPause);
@@ -989,10 +1097,10 @@ public OnClientDisconnect(client){
 			//to-do: make a chat override that makes it look like players' messages are getting through to everyone else when they really aren't (PrintToChatAll what they say)
 
 		}else{
-			LogMessage("Keeping game paused because %s disconnected, steamid %s", playerName, currentSteamID);
+			LogMessage("Keeping game paused because %s disconnected, steamid %s.", playerName, currentSteamID);
 
 		}
-		PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote", playerName);
+		PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote.", playerName);
 
 		waitingForPlayer++;
 		waitingForSubVote=true;
@@ -1023,7 +1131,7 @@ public Action:RevoteWait(Handle:timer, any:index){
 	for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
 		playerSubVote[i]=0;
 	}
-	PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote",playerNames[index]);
+	PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote.",playerNames[index]);
 
 }
 
@@ -1033,22 +1141,22 @@ public Action:EndSubVote(Handle:timer, any:index){
 	}
 
 	if (votesToSub>votesToWait) {
-
 		new String:currentSteamID[20];	
-		currentSteamID=steamIDforTeamsAndClasses[index]
-
-		LogMessage("Requesting sub for %s", currentSteamID);
-
-		PrintToChatAll("\x04Requesting sub for %s, %d-%d",playerNames[index],votesToSub,votesToWait);//print name
+		currentSteamID=steamIDforTeamsAndClasses[index];
+		LogMessage("Requesting sub for %s.", currentSteamID);
+		PrintToChatAll("\x04Requesting sub for %s, %d-%d.",playerNames[index],votesToSub,votesToWait);
 	}else{ //if there's a tie, wait
-		LogMessage("Waiting 2 minutes to revote for steamid %s", playerNames[index]);
+		new String:currentSteamID[20];	
+		currentSteamID=steamIDforTeamsAndClasses[index];
+		LogMessage("Waiting 2 minutes to revote for %s of steamid %s.", playerNames[index],currentSteamID);
 		CreateTimer(120.0,RevoteWait,index);
-		PrintToChatAll("\x04Waiting 2 minutes to revote for %s, %d-%d",playerNames[index],votesToSub,votesToWait);
+		PrintToChatAll("\x04Waiting 2 minutes to revote for %s, %d-%d.",playerNames[index],votesToSub,votesToWait);
 	}
 	waitingForSubVote=false;
 }
 
-public Action:ClientPause(Handle:timer){
+public Action:ClientPause(Handle:timer){//toggles pause - must have sv_pausable 1 set before
+//to-do: change this function so it creates (and manages) a short-lived pubcomp pausebot to pause/unpause the game
 	new client=1;
 	while (client<MaxClients && !IsClientInGame(client)){
 		client++;
@@ -1070,7 +1178,14 @@ public Action:UnpauseGame(Handle:timer){
 	if(isPaused==true){
 		ServerCommand("sv_pausable 1");
 		CreateTimer(0.1,ClientPause);
-		LogMessage("Unpausing game");
+		Format(countdownTextString, sizeof(countdownTextString),"- Resuming -" );
+		for (new i = 1; i <= MaxClients; i++) {
+			if (IsClientInGame(i)){
+				SetHudTextParams(-1.0, 0.4, 1.0, 0, 255, 0, 255);
+				ShowSyncHudText(i,countdownText, countdownTextString)
+			}
+		}
+		LogMessage("Unpausing game.");
 		isPaused=false;
 		//load antiflood if it's unloaded
 	}else{
@@ -1173,9 +1288,10 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 	if(hasPlayerSaid[client]==true && isPaused){
 		PrintToChatAll("%s :  %s",playerNameForSay,text);
 	}else if (isPaused){
-		hasPlayerSaid[client]=true; //make this an array for clients
+		hasPlayerSaid[client]=true; //don't manually print the first message when paused
 	}
 
+	//ignore specs; also, log mentors
 	new String:currentSteamID[20];
 	currentSteamID="";
 	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
@@ -1187,6 +1303,9 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
 		return Plugin_Continue;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not let him vote
+		if(hasGameStarted && isMentor[index]){
+			LogMessage("[Mentor] Mentor %s with steamid %s said: %s", playerNameForSay, currentSteamID,text);
+		}
 		return Plugin_Continue;
 	}
 
@@ -1238,16 +1357,14 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 				if (minutes == 0) {
 					PrintToChatAll("\x04Class setup starts in %d seconds.", seconds);
 				} else if (seconds == 0) {
-					PrintToChatAll("\x04Class setup starts in %d minutes", minutes);
+					PrintToChatAll("\x04Class setup starts in %d minutes.", minutes);
 				} else {
 					PrintToChatAll("\x04Class setup starts in %d minutes and %d seconds.", minutes, seconds);
 				}
 				countdownTime=10;
 				CountdownDecrement(INVALID_HANDLE,3);
-				//if(gameCountdown==INVALID_HANDLE){//<--unnecessary
 				waitingToStartGame=true;
 				gameCountdown = CreateTimer(float(GAME_START_DELAY), Timer:PubCompStartGame);
-				//}//<--unnecessary
 			}
 		} else if (gameCountdown != INVALID_HANDLE) {
 			waitingToStartGame=false;
@@ -1358,6 +1475,7 @@ public Action:CountdownDecrement(Handle:timer, any:idNumber){
 }
 
 public Timer:PubCompStartGame(Handle:data) {
+	gameCountdown=INVALID_HANDLE;
 	ServerCommand(warmupActivationCommands[activeWarmupMode][DISABLE]);
 	waitingToStartGame=false;
 	hasGameStarted=true;
@@ -1368,22 +1486,23 @@ public Timer:PubCompStartGame(Handle:data) {
 	ShowReadyHud(INVALID_HANDLE,0);
 	PutPlayersOnTeam();
 	ServerCommand("mp_restartgame 1");
-	CreateTimer(1.0, Timer:PubCompStartGame2);
+	StartGame2Timer=CreateTimer(1.0, Timer:PubCompStartGame2);
 }
 
 
 public Timer:PubCompStartGame2(Handle:data) {
+	StartGame2Timer=INVALID_HANDLE;
 	PutPlayersOnClass();
 	LogMessage("Setup classes. Game will start in %d seconds.", SETUP_CLASSES_TIME);
 	PrintCenterTextAll("Set up classes now");
 	countdownTime=SETUP_CLASSES_TIME;
 	CountdownDecrement(INVALID_HANDLE,1);
-	ServerCommand("mp_restartgame %d", SETUP_CLASSES_TIME); //should say "Game is Live" now, not one second after.. why does esea do it with a delay? seems stupid.
-	CreateTimer(float(SETUP_CLASSES_TIME) + 1.0, Timer:PubCompStartGame3); //I want this to be 0, but it doesn't show up at the right time! bleh, maybe that's why ^
-	//try setting a variable like "shouldShowHudText" to true here, and then hook player respawn to redrawing the countdown text if the variable is true
+	ServerCommand("mp_restartgame %d", SETUP_CLASSES_TIME);
+	StartGame3Timer = CreateTimer(float(SETUP_CLASSES_TIME) + 1.0, Timer:PubCompStartGame3); 
 }
 
 public Timer:PubCompStartGame3(Handle:data) {
+	StartGame3Timer=INVALID_HANDLE;
 	ServerCommand("mp_tournament 1");
 	ShowReadyHud(INVALID_HANDLE,0);
 	ExecuteGameCommands();
