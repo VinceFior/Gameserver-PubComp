@@ -61,6 +61,7 @@ new Handle:gameCountdown = INVALID_HANDLE;
 new Handle:showReadyHudTimer=INVALID_HANDLE;
 new Handle:StartGame2Timer=INVALID_HANDLE;
 new Handle:StartGame3Timer=INVALID_HANDLE;
+new Handle:UnpauseGameTimer=INVALID_HANDLE;
 
 new Handle:countdownText=INVALID_HANDLE;
 new countdownTime=0;
@@ -188,6 +189,10 @@ public Action:CommandResetGameSetup(client, args){
 		KillTimer(StartGame3Timer);
 		StartGame3Timer=INVALID_HANDLE;
 	}
+	if(UnpauseGameTimer!=INVALID_HANDLE){
+		KillTimer(UnpauseGameTimer);
+		UnpauseGameTimer=INVALID_HANDLE;
+	}
 	for(new i=0; i<32; i++){
 		steamIDforTeamsAndClasses[i][0]=0; //steamid
 		droppedPlayerSteamID[i][0]=0; //list of dropped players
@@ -292,6 +297,10 @@ public Action:CommandLetPlayersReady(client,args){
 	if(StartGame3Timer!=INVALID_HANDLE){
 		KillTimer(StartGame3Timer);
 		StartGame3Timer=INVALID_HANDLE;
+	}
+	if(UnpauseGameTimer!=INVALID_HANDLE){
+		KillTimer(UnpauseGameTimer);
+		UnpauseGameTimer=INVALID_HANDLE;
 	}
 
 	waitingToStartGame=false;
@@ -421,9 +430,9 @@ public Action:ShowReadyHud(Handle:timer, any:idNumber){
 		}
 	}else if(idNumber==1){
 		if(specReadiedPlayersString[0]==0){
-			Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
+			Format(readyTextString, sizeof(readyTextString),"Type .ready to ready, .unready to unready\n\nReady:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
 		}else{
-			Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpec:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
+			Format(readyTextString, sizeof(readyTextString),"Type .ready to ready, .unready to unready\n\nReady:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpec:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
 		}
 		for (new i = 1; i <= MaxClients; i++) {
 			if (IsClientInGame(i)){
@@ -792,36 +801,49 @@ public Action:Event_RoundEnd(Handle: event, const String:name[], bool:dontBroadc
 public Action:TFGameOver(Handle: event, const String:name[], bool:dontBroadcast){
 	ServerCommand("mp_restartgame 1"); //restarting the game (in 1 second) stops it from needing tournament mode to not change maps - can I do this in less than one second?
 	//small Bug: the scoreboard pops up and needs to be manually closed (hitting Tab once)
-	CreateTimer(1.0, Timer:EndTournamentGame); //as soon as the game can have tournament off without changing maps, get rid of it - it is unnecessary and looks distracting
+	new winTeam=-1;
 	if(GetTeamScore(3)>GetTeamScore(2)){
+		winTeam=3;
 		LogMessage("Match over! Blue team wins %d-%d.",GetTeamScore(3),GetTeamScore(2))
 		PrintToChatAll("\x04Match over! Blue team wins %d-%d.",GetTeamScore(3),GetTeamScore(2))
-		SetHudTextParams(-1.0, 0.4, 3.0, 0, 0, 255, 255); //color: blue
 	}else if(GetTeamScore(2)>GetTeamScore(3)){
+		winTeam=2;
 		LogMessage("Match over! Red team wins %d-%d.",GetTeamScore(2),GetTeamScore(3))
 		PrintToChatAll("\x04Match over! Red team wins %d-%d.",GetTeamScore(2),GetTeamScore(3))
-		SetHudTextParams(-1.0, 0.4, 3.0, 255, 0, 0, 255); //color: red
 	}else{ //is this a reliable indicator of which team won? what about stopwatch?
 		LogMessage("Match over! Tied %d-%d.",GetTeamScore(3),GetTeamScore(2))
 		PrintToChatAll("\x04Match over! Tied %d-%d.",GetTeamScore(3),GetTeamScore(2))
-		SetHudTextParams(-1.0, 0.4, 3.0, 255, 255, 255, 255); //color: white
 	}
-	 //this only shows up for a short amount of time (<~1s) and only if the player quickly hits tab to close the automatically opened scoreboard before he is respawned
-	Format(countdownTextString, sizeof(countdownTextString),"- Match over -");
-	for (new i = 1; i <= MaxClients; i++) {
-		if (IsClientInGame(i)){
-			ShowSyncHudText(i,countdownText, countdownTextString)
-		}
-	}
+	CreateTimer(1.0, Timer:EndTournamentGame,winTeam); //as soon as the game can have tournament off without changing maps, get rid of it - it is unnecessary and looks distracting
 }
 
-public Timer:EndTournamentGame(Handle:data){
+
+public Timer:EndTournamentGame(Handle:data, any:winTeam){
 	ServerCommand("mp_tournament 0");
 	ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
 	PrintToChatAll("\x04Entering warmup mode.");
 	ServerCommand("mp_timelimit 0"); //so map never changes on its own
 	ServerCommand("mp_winlimit 0");//
 	hasGameStarted=false;
+	CreateTimer(1.0,Timer:ShowWinText,winTeam);
+}
+
+public Timer:ShowWinText(Handle:data, any:winTeam){
+
+	if(winTeam==3){
+		SetHudTextParams(-1.0, 0.4, 6.0, 0, 0, 255, 255); //color: blue
+	}else if(winTeam==2){
+		SetHudTextParams(-1.0, 0.4, 6.0, 255, 0, 0, 255); //color: red
+	}else{
+		SetHudTextParams(-1.0, 0.4, 6.0, 255, 255, 255, 255); //color: white
+	}
+	Format(countdownTextString, sizeof(countdownTextString),"- Match over -");
+	for (new i = 1; i <= MaxClients; i++) {
+		if (IsClientInGame(i)){
+			ShowSyncHudText(i,countdownText, countdownTextString)
+		}
+	}
+
 }
 
 public Action:Command_JoinTeam(client, const String:command[], args) 
@@ -1115,7 +1137,7 @@ public OnClientAuthorized( client, const String:auth[] ) {
 			countdownTime=10;
 			CountdownDecrement(INVALID_HANDLE,2);
 			//the hud text does not show up if it is started when the game is paused, but it does continue into the pause if started before, which I'm using
-			CreateTimer(10.0,UnpauseGame); //10 seconds is the time for the rejoining player to get up to Sending Client Info
+			UnpauseGameTimer=CreateTimer(10.0,UnpauseGame); //10 seconds is the time for the rejoining player to get up to Sending Client Info
 			votesToSub=0;
 			votesToWait=0;
 			waitingForSubVote=false;
@@ -1192,22 +1214,24 @@ public OnClientDisconnect(client){
 		if(isPaused==false){
 			LogMessage("Pausing game because %s disconnected, steamid %s.", playerName, currentSteamID);
 			new clientIndex=1;
-		if(clientIndex==client){
-			clientIndex++;
-		}
-			while (clientIndex<MaxClients && !IsClientInGame(clientIndex)){
-				clientIndex++;
 			if(clientIndex==client){
 				clientIndex++;
 			}
-			if(clientIndex>MaxClients){
-				clientIndex=MaxClients;
-			}
-//AHAH, used to be "client++";
-//and I added in the ifs
+			while (clientIndex<MaxClients && !IsClientInGame(clientIndex)){
+				clientIndex++;
+				if(clientIndex==client){
+					clientIndex++;
+				}
+				if(clientIndex>MaxClients){
+					clientIndex=MaxClients;
+				}
 			}
 			//unload antiflood if it's loaded
 			ServerCommand("sv_pausable 1");
+			if(UnpauseGameTimer!=INVALID_HANDLE){
+				KillTimer(UnpauseGameTimer);
+				UnpauseGameTimer=INVALID_HANDLE;
+			}
 			if(!IsClientInGame(clientIndex) || clientIndex==client){//if no players are connected (besides the one leaving), make and use the pausebot
 				PauseBotIndex=CreateFakeClient("PubComp PauseBot");
 				LogMessage("Creating PauseBot.");
@@ -1347,6 +1371,7 @@ public Action:ClientPause(Handle:timer){//toggles pause - must have sv_pausable 
 }
 
 public Action:UnpauseGame(Handle:timer){
+	UnpauseGameTimer=INVALID_HANDLE;
 	if(isPaused==true){
 		ServerCommand("sv_pausable 1");
 		CreateTimer(0.1,ClientPause);
@@ -1360,7 +1385,7 @@ public Action:UnpauseGame(Handle:timer){
 		LogMessage("Unpausing game.");
 		//load antiflood if it's unloaded
 	}else{
-		LogMessage("Will not unpause the game, it is already paused.");
+		LogMessage("Will not unpause the game, it is already not paused.");
 	}
 }
 
@@ -1452,7 +1477,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 	new String:playerNameForSay[MAX_NAME_LENGTH];
 	GetClientName(client,playerNameForSay,sizeof(playerNameForSay));
 	if(hasPlayerSaid[client]==true && isPaused){
-		PrintToChatAll("%s :  %s",playerNameForSay,text);
+		PrintToChatAll("%s :  %s",playerNameForSay,text); //this only works for all chat, not team chat
 	}else if (isPaused){
 		hasPlayerSaid[client]=true; //don't manually print the first message when paused
 	}
@@ -1465,7 +1490,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 	do{
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
-	if(index==numberOfPlayersAddSteam){
+	if(index==numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index])){//added in and: if it's the last player and it's not on the list
 		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
 		return Plugin_Continue;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not let him vote
@@ -1478,13 +1503,14 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		}
 		return Plugin_Continue;
 	}
-
 	// ready unready vote
 	if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0) {
 		if(GetClientTeam(client)==1){
 			PrintToChat(client, "\x04You cannot vote if you are on spectate.");
 			return Plugin_Continue;
 		}
+	}
+	if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0) {
 		if(hasGameStarted || !canPlayersReady || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){//you can only ready/vote if you're on red or blue team
 			return Plugin_Continue;
 		}
@@ -1560,41 +1586,33 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 				//PrintToChatAll("\x04%d players of %d are now ready.", readyCount, playersNeeded); //unnecessary with hud
 			}
 		}	
-
 	//sub wait vote
 	}else  if (strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0){
 		if(!hasGameStarted || waitingForPlayer==0 || !(GetClientTeam(client)==2 || GetClientTeam(client)==3) || !waitingForSubVote){
 			return Plugin_Continue;
 		}
-		new bool:didSwitch=false;
 		if (strcmp(text, ".sub") == 0) {
 			if(playerSubVote[client]!=1){
-				didSwitch=true;
-				//new String:playerName[32];
-				//GetClientName(client, playerName, sizeof(playerName));
-				//PrintToChatAll("\x04Player %s has voted for a sub.", playerName);
+				if(playerSubVote[client]==2){
+					votesToWait--;
+				}
 				PrintToChat(client, "\x04You have voted for a sub.");
-			}
-			if(didSwitch==true){
 				playerSubVote[client] = 1;
 				votesToSub++;
 			}
+
 		}else if (strcmp(text, ".wait") == 0) {
 			if(playerSubVote[client]!=2){
-				didSwitch=true;
-				//new String:playerName[32];
-				//GetClientName(client, playerName, sizeof(playerName));
-				//PrintToChatAll("\x04Player %s has voted to wait.", playerName);
+				if(playerSubVote[client]==1){
+					votesToSub--;
+				}
 				PrintToChat(client, "\x04You have voted to wait.");
-			}
-			if(didSwitch==true){
 				playerSubVote[client] = 2;
 				votesToWait++;
 			}
+
 		}
-		//if(didSwitch==false){
-			//return Plugin_Continue; //if the player's just being silly, don't reset the timer or restate that players are ready
-		//}
+
 	}
 	return Plugin_Continue;
 }
