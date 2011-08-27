@@ -1,2 +1,2 @@
 This plugin is for the first prototype: it's fully functional within the limitations and commands explained in the config file, though I'll be updating it continuously, mainly with aesthetics.
-The plugin is the uncompiled version of what will be put in the server's addons/sourcemod/plugins folder. The config file is an example of the commands the node server might enter upon starting a match.
+The plugin is the uncompiled version of what will be put in the server's addons/sourcemod/plugins folder. The config file is an example of the commands the node server might enter through rcon upon starting a match.
