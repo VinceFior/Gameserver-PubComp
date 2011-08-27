@@ -25,7 +25,7 @@ public Plugin:myinfo = {
 new String:gameCommands[MAX_COMMANDS][MAX_COMMAND_LENGTH];
 new commandCount = 0;
 
-new playersNeeded = 1; //server will override this
+new playersNeeded = 12; //server will override this
 
 new numberOfPlayersAddSteam=0;// =0 unnecessary..
 new numberOfPlayersNames=0;
@@ -35,6 +35,7 @@ new numberOfPlayersAddClass=0;
 new numberOfPlayersAddPositions=0;
 new numberOfClassLimit=1;
 new PauseBotIndex=-1;
+new playerIndexToSubVoteFor=-1;
 
 new String:steamIDforTeamsAndClasses[32][20];
 new String:playerNames[32][MAX_NAME_LENGTH];
@@ -56,7 +57,7 @@ new bool:isPaused=false;
 new bool:hasPlayerSaid[MAXPLAYERS+1]=false; //for talking when paused
 
 new bool:playerReady[MAXPLAYERS+1];
-new playerSubVote[MAXPLAYERS+1];
+new playerSubVote[MAXPLAYERS+1][32];
 new Handle:gameCountdown = INVALID_HANDLE;
 new Handle:showReadyHudTimer=INVALID_HANDLE;
 new Handle:StartGame2Timer=INVALID_HANDLE;
@@ -73,8 +74,8 @@ new String:readiedPlayersString[256];
 new String:notConnectedPlayersString[256];
 new String:specReadiedPlayersString[256];
 
-new votesToSub=0;
-new votesToWait=0;
+new votesToSub[32];
+new votesToWait[32];
 
 //[Nightgunner]
 // These functions and globals are for setting, activating and
@@ -156,11 +157,10 @@ public Action:CommandResetGameSetup(client, args){
 	numberOfPlayersAddPositions=0;
 	numberOfClassLimit=1;
 	PauseBotIndex=-1;
+	playerIndexToSubVoteFor=-1;
 	for (new sayClient=1; sayClient<=MaxClients; sayClient++){
 		hasPlayerSaid[sayClient]=false;
 	}
-	votesToSub=0;
-	votesToWait=0;
 	waitingForPlayer=0;
 	countdownTime=0;
 	waitingForSubVote=false;
@@ -200,6 +200,8 @@ public Action:CommandResetGameSetup(client, args){
 		playerNames[i][0]=0; //name
 		teamForPlayer[i]=-1; //team
 		classForPlayer[i]=-1; //class
+		votesToSub[i]=0;
+		votesToWait[i]=0;
 		for (new b=0; b<9; b++){
 			positionsForPlayer[i][b]=0; //positions
 		}
@@ -213,7 +215,9 @@ public Action:CommandResetGameSetup(client, args){
 	commandCount = 0;
 	for(new i=1; i<MAXPLAYERS+1; i++){ 
 		playerReady[i]=false; //lets the players ready up, to start the new match
-		playerSubVote[i]=0; //shows players haven't voted about a sub
+		for(new a=0; a<32; a++){
+			playerSubVote[i][a]=0; //shows players haven't voted about a sub
+		}
 	}
 	if(isPaused==true && isAboutToPause==false){
 		ServerCommand("sv_pausable 1");
@@ -277,7 +281,9 @@ public Action:CommandLetPlayersReady(client,args){
 
 	for(new i=1; i<MAXPLAYERS+1; i++){ 
 		playerReady[i]=false; //lets the players ready up, to start the new match
-		playerSubVote[i]=0; //shows players haven't voted about a sub
+		for(new a=0; a<32; a++){
+			playerSubVote[i][a]=0; //shows players haven't voted about a sub
+		}
 	}
 	for (new sayClient=1; sayClient<=MaxClients; sayClient++){
 		hasPlayerSaid[sayClient]=false;
@@ -305,18 +311,16 @@ public Action:CommandLetPlayersReady(client,args){
 
 	waitingToStartGame=false;
 	waitingForSubVote=false;
-	votesToSub=0;
-	votesToWait=0;
 	canPause=false;
 	waitingForPlayer=0;
 	countdownTime=0;
 	PauseBotIndex=-1;
-
-
-
+	playerIndexToSubVoteFor=-1;
 
 	for(new i=0; i<32; i++){
 		droppedPlayerSteamID[i][0]=0;
+		votesToSub[i]=0;
+		votesToWait[i]=0;
 	}
 	if(isPaused==true && isAboutToPause==false){
 		ServerCommand("sv_pausable 1");
@@ -1123,14 +1127,16 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		}
 		new String:playerName[MAX_NAME_LENGTH];
 		GetClientName( client, playerName, MAX_NAME_LENGTH );
-		LogMessage("Player %s has rejoined, no need for sub.", playerName);
+		LogMessage("Player %s with steamid %s has rejoined, no need for sub.", playerName, currentSteamID);
 		PrintToChatAll("\x04Canceling sub vote for %s.", playerName);
 	}
 
 
 	if(waitingForPlayer<=0 && hasGameStarted){
 			for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
-				playerSubVote[i]=0;
+				for(new a=0; a<32; a++){
+					playerSubVote[i][a]=0; //shows players haven't voted about a sub
+				}
 			}
 
 			PrintToChatAll("\x04Game unpauses in 10 seconds.");
@@ -1138,9 +1144,13 @@ public OnClientAuthorized( client, const String:auth[] ) {
 			CountdownDecrement(INVALID_HANDLE,2);
 			//the hud text does not show up if it is started when the game is paused, but it does continue into the pause if started before, which I'm using
 			UnpauseGameTimer=CreateTimer(10.0,UnpauseGame); //10 seconds is the time for the rejoining player to get up to Sending Client Info
-			votesToSub=0;
-			votesToWait=0;
+			for(new i=0; i<32; i++){
+				votesToSub[i]=0;
+				votesToWait[i]=0;
+
+			}
 			waitingForSubVote=false;
+			playerIndexToSubVoteFor=-1;
 	}	
 
 }
@@ -1251,7 +1261,6 @@ public OnClientDisconnect(client){
 			LogMessage("Keeping game paused because %s disconnected, steamid %s.", playerName, currentSteamID);
 
 		}
-		PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote.", playerName);
 
 		waitingForPlayer++;
 		waitingForSubVote=true;
@@ -1263,9 +1272,9 @@ public OnClientDisconnect(client){
 		do{
 			index++;
 		}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
-
+		PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote.",playerNames[index]);
 		CreateTimer(30.0, EndSubVote,index);//i is the player's index in my arrays (numberOfPlayersAddSteam etc.)
-
+		playerIndexToSubVoteFor=index;
 	}
 }
 
@@ -1274,16 +1283,18 @@ public Action:RevoteWait(Handle:timer, any:index){
 		return;
 	}
 	waitingForSubVote=true;
-	votesToSub=0;
-	votesToWait=0;
-
-	CreateTimer(30.0, EndSubVote,index); //i is the player's index in my weird array system
-
+	for(new i=0; i<32; i++){
+		votesToSub[i]=0;
+		votesToWait[i]=0;
+	}
 	for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
-		playerSubVote[i]=0;
+		for(new a=0; a<32; a++){
+			playerSubVote[i][a]=0; //shows players haven't voted about a sub
+		}
 	}
 	PrintToChatAll("\x04Type .sub to replace %s with a sub or .wait to wait 2 minutes for rejoin - 30 seconds to vote.",playerNames[index]);
-
+	CreateTimer(30.0, EndSubVote,index); //i is the player's index in my weird array system
+	playerIndexToSubVoteFor=index;
 }
 
 public Action:EndSubVote(Handle:timer, any:index){
@@ -1291,19 +1302,22 @@ public Action:EndSubVote(Handle:timer, any:index){
 		return;
 	}
 
-	if (votesToSub>votesToWait) {
+	if (votesToSub[index]>votesToWait[index]) {
 		new String:currentSteamID[20];	
 		currentSteamID=steamIDforTeamsAndClasses[index];
 		LogMessage("Requesting sub for %s.", currentSteamID);
-		PrintToChatAll("\x04Requesting sub for %s, %d-%d.",playerNames[index],votesToSub,votesToWait);
+		PrintToChatAll("\x04Requesting sub for %s, %d-%d.",playerNames[index],votesToSub[index],votesToWait[index]);
 	}else{ //if there's a tie, wait
 		new String:currentSteamID[20];	
 		currentSteamID=steamIDforTeamsAndClasses[index];
 		LogMessage("Waiting 2 minutes to revote for %s of steamid %s.", playerNames[index],currentSteamID);
 		CreateTimer(120.0,RevoteWait,index);
-		PrintToChatAll("\x04Waiting 2 minutes to revote for %s, %d-%d.",playerNames[index],votesToSub,votesToWait);
+		PrintToChatAll("\x04Waiting 2 minutes to revote for %s, %d-%d.",playerNames[index],votesToSub[index],votesToWait[index]);
 	}
 	waitingForSubVote=false;
+	if(playerIndexToSubVoteFor==index){ //if there has not been a second vote that has overridden the playerIndexToSubVoteFor, then 'cancel' it
+		playerIndexToSubVoteFor=-1;
+	}
 }
 
 
@@ -1587,28 +1601,29 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 			}
 		}	
 	//sub wait vote
+//set index equal to the my 'array index' of the player in question
 	}else  if (strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0){
 		if(!hasGameStarted || waitingForPlayer==0 || !(GetClientTeam(client)==2 || GetClientTeam(client)==3) || !waitingForSubVote){
 			return Plugin_Continue;
 		}
 		if (strcmp(text, ".sub") == 0) {
-			if(playerSubVote[client]!=1){
-				if(playerSubVote[client]==2){
-					votesToWait--;
+			if(playerSubVote[client][playerIndexToSubVoteFor]!=1){
+				if(playerSubVote[client][playerIndexToSubVoteFor]==2){
+					votesToWait[playerIndexToSubVoteFor]--;
 				}
-				PrintToChat(client, "\x04You have voted for a sub.");
-				playerSubVote[client] = 1;
-				votesToSub++;
+				PrintToChat(client, "\x04You have voted for a sub for %s.",playerNames[playerIndexToSubVoteFor]);
+				playerSubVote[client][playerIndexToSubVoteFor] = 1;
+				votesToSub[playerIndexToSubVoteFor]++;
 			}
 
 		}else if (strcmp(text, ".wait") == 0) {
-			if(playerSubVote[client]!=2){
-				if(playerSubVote[client]==1){
-					votesToSub--;
+			if(playerSubVote[client][playerIndexToSubVoteFor]!=2){
+				if(playerSubVote[client][playerIndexToSubVoteFor]==1){
+					votesToSub[playerIndexToSubVoteFor]--;
 				}
-				PrintToChat(client, "\x04You have voted to wait.");
-				playerSubVote[client] = 2;
-				votesToWait++;
+				PrintToChat(client, "\x04You have voted to wait for %s.", playerNames[playerIndexToSubVoteFor]);
+				playerSubVote[client][playerIndexToSubVoteFor] = 2;
+				votesToWait[playerIndexToSubVoteFor]++; 
 			}
 
 		}
