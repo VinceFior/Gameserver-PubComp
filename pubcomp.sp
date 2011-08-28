@@ -28,12 +28,7 @@ new commandCount = 0;
 new playersNeeded = 12; //server will override this
 
 new numberOfPlayersAddSteam=0;// =0 unnecessary..
-new numberOfPlayersNames=0;
 new numberOfPlayersDropped=0;
-new numberOfPlayersAddTeam=0;
-new numberOfPlayersAddClass=0;
-new numberOfPlayersAddPositions=0;
-new numberOfClassLimit=1;
 new PauseBotIndex=-1;
 new playerIndexToSubVoteFor=-1;
 
@@ -84,9 +79,9 @@ new votesToWait[32];
 #define ENABLE 0
 #define DISABLE 1
 new String:warmupModes[NUM_WARMUP_MODES + 1][16] = {"NONE", "SOAP", "MGE"};
-new activeWarmupMode;
+new activeWarmupMode=0;
 new String:warmupActivationCommands[NUM_WARMUP_MODES + 1][2][MAX_COMMAND_LENGTH] = {
-	{"", ""}, //can't go directly from soap to nothing without a map change because soap disables the control points [V]: I disagree, restartgame
+	{"sm plugins unload soap_tf2dm", ""}, //and also unload mge
 	{"sm plugins load soap_tf2dm", "sm plugins unload soap_tf2dm"},
 	{"sm plugins load mgemod", "sm plugins unload mgemod"}
 };
@@ -147,20 +142,15 @@ public Action:CommandResetGameSetup(client, args){
 		hasGameStarted=false;
 	}
 
-	//resets steamids, team, class, positions, class limits, game commands, and votes; and unpauses the game if paused
-	//warmup mod is just overridden and therefore doesn't need to be reset
+	//resets steamids, team, class, positions, class limits, game commands, needed ready players, and votes; and unpauses the game if paused
 	numberOfPlayersAddSteam=0;
-	numberOfPlayersNames=0;
 	numberOfPlayersDropped=0;
-	numberOfPlayersAddTeam=0;
-	numberOfPlayersAddClass=0;
-	numberOfPlayersAddPositions=0;
-	numberOfClassLimit=1;
 	PauseBotIndex=-1;
 	playerIndexToSubVoteFor=-1;
 	for (new sayClient=1; sayClient<=MaxClients; sayClient++){
 		hasPlayerSaid[sayClient]=false;
 	}
+	playersNeeded = 12;
 	waitingForPlayer=0;
 	countdownTime=0;
 	waitingForSubVote=false;
@@ -230,7 +220,7 @@ public Action:CommandResetGameSetup(client, args){
 
 	ServerCommand("mp_tournament 0");
 	ServerCommand("mp_timelimit 0"); //so map never changes on its own
-	ServerCommand("mp_winlimit 0");//
+	ServerCommand("mp_winlimit 0");
 
 	LogMessage("Game setup cleared.");
 	return Plugin_Handled;
@@ -268,10 +258,9 @@ public Action:CommandLetPlayersReady(client,args){
 		return Plugin_Stop;
 	}
 
-	
 	ServerCommand("mp_tournament 0");
 	ServerCommand("mp_timelimit 0"); //so map never changes on its own
-	ServerCommand("mp_winlimit 0");//
+	ServerCommand("mp_winlimit 0");
 
 	if(hasGameStarted==true){
 		ServerCommand(warmupActivationCommands[activeWarmupMode][ENABLE]);
@@ -477,16 +466,28 @@ public Action:CommandSetPlayerPositions(client,args){
 		LogMessage( "Client %d is not permitted to set player positions.", client );
 		return Plugin_Stop;
 	}
-	new String:classBuffer[9][2];
-	new String:positionsBuffer[18]; // "1-2-3-4-5-6-7-8-9" = 17 + terminator
-	GetCmdArg(1,positionsBuffer, sizeof(positionsBuffer ) );
-	new numberOfClasses = ExplodeString(positionsBuffer, "-", classBuffer,9,2);
-	for (new i=0; i<numberOfClasses; i++){
-		positionsForPlayer[numberOfPlayersAddPositions][i]=StringToInt(classBuffer[i]);
-		//the player number 'numberOfPlayersAddPositions' has at least one and up to nine classes in the above array
+
+	//find the player's "index" in my arrays
+	new String:currentSteamID[20];
+	GetCmdArg(1,currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to set class for.",currentSteamID);
+		return Plugin_Handled;
 	}
 
-	numberOfPlayersAddPositions++;
+	new String:classBuffer[9][2];
+	new String:positionsBuffer[18]; // "1-2-3-4-5-6-7-8-9" = 17 + terminator
+	GetCmdArg(2,positionsBuffer, sizeof(positionsBuffer ) );
+	new numberOfClasses = ExplodeString(positionsBuffer, "-", classBuffer,9,2);
+	for (new i=0; i<numberOfClasses; i++){
+		positionsForPlayer[index][i]=StringToInt(classBuffer[i]);
+		//the player number 'index' has at least one and up to nine classes in the above array
+	}
+
 	return Plugin_Handled;
 }
 
@@ -496,11 +497,21 @@ public Action:CommandSetPlayerClass(client,args){
 		LogMessage( "Client %d is not permitted to set player classes.", client );
 		return Plugin_Stop;
 	}
+	//find the player's "index" in my arrays
+	new String:currentSteamID[20];
+	GetCmdArg(1,currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to set class for.",currentSteamID);
+		return Plugin_Handled;
+	}
 	new String:classBuffer[2];
-	GetCmdArg(1,classBuffer,sizeof(classBuffer));
+	GetCmdArg(2,classBuffer,sizeof(classBuffer));
 	new classNumber=StringToInt(classBuffer);
-	classForPlayer[numberOfPlayersAddClass]=classNumber;
-	numberOfPlayersAddClass++;
+	classForPlayer[index]=classNumber;
 	return Plugin_Handled;
 }
 
@@ -509,24 +520,35 @@ public Action:CommandSetPlayerTeam(client,args){
 		LogMessage( "Client %d is not permitted to set player teams.", client );
 		return Plugin_Stop;
 	}
+
+	//find the player's "index" in my arrays
+	new String:currentSteamID[20];
+	GetCmdArg(1,currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to set team for.",currentSteamID);
+		return Plugin_Handled;
+	}
+
 	new String:teamBuffer[2];
-	GetCmdArg(1,teamBuffer, sizeof( teamBuffer ) );
+	GetCmdArg(2,teamBuffer, sizeof( teamBuffer ) );
 	new teamNumber=StringToInt(teamBuffer);
-	teamForPlayer[numberOfPlayersAddTeam]=teamNumber;
-	numberOfPlayersAddTeam++;
+	teamForPlayer[index]=teamNumber;
 	return Plugin_Handled;
 }
 
 public Action:CommandSetClassLimit(client,args){
-	if(numberOfClassLimit>9){
-		LogMessage("Cannot add a class limit for the %dth class (called too many times; reset limits first).",numberOfClassLimit);
-		return;
-	}
+//to-do: add class limit for each team
+	new String:classBuffer[2];
+	GetCmdArg(1,classBuffer,sizeof(classBuffer));
 	new String:limitBuffer[3];
-	GetCmdArg(1,limitBuffer,sizeof(limitBuffer));
+	GetCmdArg(2,limitBuffer,sizeof(limitBuffer));
+	new class=StringToInt(classBuffer);
 	new limit=StringToInt(limitBuffer);
-	classLimit[numberOfClassLimit]=limit;
-	numberOfClassLimit++;
+	classLimit[class]=limit; //1 through 9
 }
 
 
@@ -552,7 +574,7 @@ public PutPlayersOnTeam()
 				GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
 				if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
 					if(teamForPlayer[a]==-1){
-						LogMessage("This player was not assigned a team: steamid is %s.",currentSteamID);
+						LogMessage("This player was not assigned a team: SteamID is %s. Can join any team..",currentSteamID);
 						return;
 					}else if(teamForPlayer[a]==1){ //prints this even when you don't change team - might want to remove in that situation
 						PrintToChat(i,"\x04You are being moved to spectate.");
@@ -595,7 +617,7 @@ public PutPlayersOnClass()
 					{
 						case -1:
 						{
-							LogMessage("Player with steamid %s was not given a class.", currentSteamID);
+							LogMessage("Player with steamid %s was not given a class and can play any class.", currentSteamID);
 							return;
 
 						}
@@ -665,7 +687,7 @@ public PutPlayersOnClass()
 bool:IsFull(team,classNumber, TFClassType:class){
 	new count=1;
 	if(classLimit[classNumber]==-1){
-		LogMessage("This class was not assigned a limit.");
+		LogMessage("Class number %d was not assigned a limit.", classNumber);
 		return false;
 	}
 	new limit=classLimit[classNumber]
@@ -686,15 +708,27 @@ public Action:CommandAddName(client,args){
 		LogMessage("Client %d is not permitted to add player names.", client);
 		return Plugin_Stop;
 	}
-	new String:name[MAX_NAME_LENGTH];
-	GetCmdArg(1,name,sizeof(name));
 
-	if(numberOfPlayersNames>31){
-		LogMessage("Failed to add %s to the list of player names. List is full.",name);
+
+
+	//find the player's "index" in my arrays
+	new String:currentSteamID[20];
+	GetCmdArg(1,currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to set name for.",currentSteamID);
 		return Plugin_Handled;
 	}
-	playerNames[numberOfPlayersNames]=name;
-	numberOfPlayersNames++;
+
+
+	new String:name[MAX_NAME_LENGTH];
+	GetCmdArg(2,name,sizeof(name));
+
+	playerNames[index]=name;
+
 	LogMessage("Added %s to the list of player names.",name);
 	return Plugin_Handled;
 }
@@ -888,6 +922,10 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 			return Plugin_Handled;
 		}
 		new shouldTeam=teamForPlayer[i];
+		if(teamForPlayer[i]==-1){
+			LogMessage("Player with SteamID %s has no assigned team and can join any team.",currentSteamID);
+			return Plugin_Continue;
+		}
 		if(newTeam!=shouldTeam){
 			ChangeClientTeam(client,shouldTeam);
 			return Plugin_Handled;
@@ -941,13 +979,20 @@ public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroa
 		return;
 	}
 	new String:currentSteamID[20];
-	for (new a=0; a<numberOfPlayersAddPositions; a++){
+	for (new a=0; a<numberOfPlayersAddSteam; a++){
 		currentSteamID="";
 		if(IsClientConnected(user)){
 			GetClientAuthString(user, currentSteamID,sizeof(currentSteamID));
 			if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
 				new canPlayClass[10]; // use indexes 1-9
 				new i=0;
+				if (positionsForPlayer[a][i]==0){ //if player positions set to 0 or not set at all, let play all classes
+					for (new b=0; b<9; b++){
+						canPlayClass[b]=true;
+					}
+					LogMessage("Player with steamid %s has no positions set, so he can play all.",currentSteamID);
+				}
+
 				while(i<9 && positionsForPlayer[a][i]){
 					canPlayClass[positionsForPlayer[a][i]]=true;
 					i++;
@@ -1468,6 +1513,7 @@ public Action:CommandSetWarmupMod( client, args ) {
 	}
 	if (activeWarmupMode == -1) {
 		LogMessage("Could not find warmup mode \"%s\".", modeName);
+		ServerCommand(warmupActivationCommands[0][0]); //load NONE, which is to say unload others
 		return Plugin_Stop;
 	}
 	ServerCommand(warmupActivationCommands[activeWarmupMode][0]); //load
