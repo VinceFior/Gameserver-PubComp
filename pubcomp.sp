@@ -63,11 +63,27 @@ new Handle:countdownText=INVALID_HANDLE;
 new countdownTime=0;
 new String:countdownTextString[512]; //the countdown messages can be at most 511 characters long. I've set this arbitrarily.
 new Handle:readyText=INVALID_HANDLE;
-new String:readyTextString[256];
-new String:notReadiedPlayersString[256];
-new String:readiedPlayersString[256];
-new String:notConnectedPlayersString[256];
-new String:specReadiedPlayersString[256];
+new String:readyTextString[512];
+
+new Handle:readyTextInfo=INVALID_HANDLE; //instructions
+new String:readyTextInfoString[512];
+new Handle:readyTextR=INVALID_HANDLE; //ready
+new String:readyTextRString[256];
+new Handle:readyTextN=INVALID_HANDLE; //not ready and not connected
+new String:readyTextNString[256];
+new Handle:readyTextS=INVALID_HANDLE; //spec
+new String:readyTextSString[256];
+new bool:isSpecMentorForText[MAXPLAYERS];
+
+new String:notReadiedPlayersString[512];
+new String:readiedPlayersString[512];
+new String:notConnectedPlayersString[512];
+new String:specReadiedPlayersString[512];
+
+new numReady=0;
+new numNotReady=0;
+new numNotConnected=0;
+new numSpec=0;
 
 new votesToSub[32];
 new votesToWait[32];
@@ -113,10 +129,12 @@ public OnPluginStart() {
 	HookEvent("server_cvar", Event_Cvar, EventHookMode_Pre); //this prevents cvar changes from showing up in chat
 	HookUserMessage(GetUserMessageId("TextMsg"), UserMessageHook_Class, true); //used to stop team change text from being printed
 	//round stalemate doesn't fire anything (it was 0-0 and the round time ran out, map time was fine) - not round_end nor teamplay_round_stalemate - not too important, though
-
 	countdownText = CreateHudSynchronizer();
 	readyText = CreateHudSynchronizer();
-
+	readyTextInfo = CreateHudSynchronizer();
+	readyTextR = CreateHudSynchronizer();
+	readyTextN = CreateHudSynchronizer();
+	readyTextS = CreateHudSynchronizer();
 	ServerCommand("pubcomp_reset_game_setup"); 
 	//ServerCommand("mp_waitingforplayers_cancel 1"); //eventually I should find a nice place for this for soap dm; totally unimportant though
 }
@@ -157,6 +175,10 @@ public Action:CommandResetGameSetup(client, args){
 	canPause=false;
 	waitingToStartGame=false;
 	readyTextString="";
+	readyTextInfoString="";
+	readyTextRString="";
+	readyTextNString="";
+	readyTextSString="";
 	notReadiedPlayersString="";
 	specReadiedPlayersString="";
 	readiedPlayersString="";
@@ -337,13 +359,19 @@ public UpdateReadyHud()
 	if(!hasGameStarted){
 		ShowReadyHud(INVALID_HANDLE,1);
 	}
-
+	numReady=0;
+	numNotReady=0;
+	numNotConnected=0;
+	numSpec=0;
 	notReadiedPlayersString="";
 	specReadiedPlayersString="";
 	readiedPlayersString="";
 	notConnectedPlayersString="";
+	for (new i=0; i<MaxClients; i++){
+		isSpecMentorForText[i]=false;
+	}
 	new String:playerName[MAX_NAME_LENGTH];
-	for(new i=1; i<=MaxClients; i++){//this would also count specs.. I need to figure out how specs work into everything pre- and post- match
+	for(new i=1; i<=MaxClients; i++){
 		if(IsClientInGame(i)){
 
 
@@ -363,18 +391,23 @@ public UpdateReadyHud()
 				isSpec=false;
 			}
 
-
 			GetClientName( i, playerName, MAX_NAME_LENGTH );
 			if(isSpec){
+				if(isMentor[index]==true){
+					isSpecMentorForText[numSpec]=true;
+					StrCat(specReadiedPlayersString,sizeof(specReadiedPlayersString),"    ");//an extra 4 spaces for mentors (for the "[M]")
+				}
 				StrCat(specReadiedPlayersString,sizeof(specReadiedPlayersString),playerName);
 				StrCat(specReadiedPlayersString,sizeof(specReadiedPlayersString),"\n  ");
+				numSpec++;
 			} else if(playerReady[i]==true){
 				StrCat(readiedPlayersString,sizeof(readiedPlayersString),playerName);
 				StrCat(readiedPlayersString,sizeof(readiedPlayersString),"\n  ");
-
+				numReady++;
 			}else if(playerReady[i]==false){
 				StrCat(notReadiedPlayersString,sizeof(notReadiedPlayersString),playerName);
 				StrCat(notReadiedPlayersString,sizeof(notReadiedPlayersString),"\n  ");
+				numNotReady++;
 			}
 		}
 	}
@@ -402,10 +435,10 @@ public UpdateReadyHud()
 		if (a==MaxClients && isSpec==false){//then client not in the server (and not a spec)
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),playerNames[i]);
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),"\n  ");
+			numNotConnected++;
 		}	
 	}
 }
-
 
 
 public Action:ShowReadyHud(Handle:timer, any:idNumber){
@@ -414,22 +447,90 @@ public Action:ShowReadyHud(Handle:timer, any:idNumber){
 			KillTimer(showReadyHudTimer);
 			showReadyHudTimer = INVALID_HANDLE;
 		}
+
+		Format(readyTextRString, sizeof(readyTextRString),"");
+		Format(readyTextNString, sizeof(readyTextNString),"");
+		Format(readyTextSString, sizeof(readyTextSString),"");
+		Format(readyTextInfoString, sizeof(readyTextInfoString),"");
+		Format(readyTextString, sizeof(readyTextString),"");
+
 		for (new i = 1; i <= MaxClients; i++) {
 			if (IsClientInGame(i)){
-				Format(readyTextString, sizeof(readyTextString),"");
+
+				SetHudTextParams(-1.0, -1.0, 0.0, 0, 0, 0, 0);
+				ShowSyncHudText(i,readyTextR, readyTextRString)
+
+				SetHudTextParams(-1.0, -1.0, 0.0, 0, 0, 0, 0);
+				ShowSyncHudText(i,readyTextN, readyTextNString)
+
+				SetHudTextParams(-1.0, -1.0, 0.0, 0, 0, 0, 0);
+				ShowSyncHudText(i,readyTextS, readyTextSString)
+
+				SetHudTextParams(-1.0, -1.0, 0.0, 0, 0, 0, 0);
+				ShowSyncHudText(i,readyTextInfo, readyTextInfoString)
+
 				SetHudTextParams(-1.0, -1.0, 0.0, 0, 0, 0, 0);
 				ShowSyncHudText(i,readyText, readyTextString)
 			}
 		}
-	}else if(idNumber==1){
-		if(specReadiedPlayersString[0]==0){
-			Format(readyTextString, sizeof(readyTextString),"Type .ready to ready, .unready to unready\n\nReady:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
+	}else if(idNumber==1){//I need to re-write this to support more than twelve players with no specs - maybe a second column for not readies and specs
+
+		if(specReadiedPlayersString[0]==0){ //if no specs, don't show "Spec:"
+			//Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
+			Format(readyTextString, sizeof(readyTextString),"\n  %s\n\n  %s\n\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString);
 		}else{
-			Format(readyTextString, sizeof(readyTextString),"Type .ready to ready, .unready to unready\n\nReady:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpec:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
+			//Format(readyTextString, sizeof(readyTextString),"Ready:\n  %s\nNot ready:\n  %s\nNot connected:\n  %s\nSpectators:\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
+			Format(readyTextString, sizeof(readyTextString),"\n  %s\n\n  %s\n\n  %s\n\n  %s",readiedPlayersString,notReadiedPlayersString,notConnectedPlayersString,specReadiedPlayersString);
 		}
+		Format(readyTextInfoString, sizeof(readyTextInfoString), "Type .ready to ready, .unready to unready");
+
+		Format(readyTextRString, sizeof(readyTextRString), "Ready:");
+
+
+		Format(readyTextNString, sizeof(readyTextNString),"");
+		Format(readyTextSString, sizeof(readyTextSString),"");
+
+		for (new i=0; i<numReady; i++){
+			StrCat(readyTextNString,sizeof(readyTextNString),"\n  ");
+		}
+		StrCat(readyTextNString,sizeof(readyTextNString), "\n\nNot ready:");
+
+		for (new i=0; i<numNotReady; i++){
+			StrCat(readyTextNString,sizeof(readyTextNString),"\n  ");
+		}
+		StrCat(readyTextNString,sizeof(readyTextNString), "\n\nNot connected:");
+
+		if(numSpec>0){
+			for (new i=0; i<numNotConnected+numReady+numNotReady; i++){
+				StrCat(readyTextSString,sizeof(readyTextSString),"\n  ");
+			}
+			StrCat(readyTextSString,sizeof(readyTextSString), "\n\n\n\n\n\nSpec:\n");
+			for (new i=0; i<numSpec; i++){
+				if(isSpecMentorForText[i]==true){
+					StrCat(readyTextSString,sizeof(readyTextSString),"[M]"); //"M" is for "Mini" ("W" is for "Wumbo", as in "I Wumbo, you Wumbo, he, she, we Wumbo.")
+				}//^It's first grade, Spongebob.
+				StrCat(readyTextSString,sizeof(readyTextSString),"\n");
+			}
+		}else{
+			Format(readyTextSString, sizeof(readyTextSString), "");
+		}
+
 		for (new i = 1; i <= MaxClients; i++) {
-			if (IsClientInGame(i)){
-				SetHudTextParams(0.025, 0.025, 1.0, 255, 255, 255, 255);//color: white - I tried yellow, but it showed up as white anyway :(
+			if (IsClientInGame(i)){ //can only set 5 here (otherwise it displays alternatingly, out of channels)
+				SetHudTextParams(0.015, 0.015, 1.0, 0, 255, 0, 255); //green
+				ShowSyncHudText(i,readyTextR, readyTextRString);
+
+
+				SetHudTextParams(0.015, 0.015, 1.0, 255, 0, 0, 255); //red
+				ShowSyncHudText(i,readyTextN, readyTextNString);
+
+
+				SetHudTextParams(0.015, 0.015, 1.0, 0, 0, 255, 255); //blue
+				ShowSyncHudText(i,readyTextS, readyTextSString);
+
+				SetHudTextParams(-1.0, 0.015, 1.0, 0, 0, 255, 255);//color: blue
+				ShowSyncHudText(i,readyTextInfo, readyTextInfoString)
+				SetHudTextParams(0.015, 0.015, 1.0, 255, 255, 255, 255);//color: white - I tried yellow, but it showed up as white anyway :( Looks like it only shows R, G, B, or W
 				ShowSyncHudText(i,readyText, readyTextString)
 			}
 		}
