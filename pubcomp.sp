@@ -38,7 +38,7 @@ new String:droppedPlayerSteamID[32][20];
 new teamForPlayer[32];
 new classForPlayer[32];
 new positionsForPlayer[32][9];
-new classLimit[10];
+new classLimit[2][10]; //0 for red, 1 for blue; 1-9 for classes
 
 new bool:isMentor[32];
 new bool:hasGameStarted=false;
@@ -218,8 +218,10 @@ public Action:CommandResetGameSetup(client, args){
 			positionsForPlayer[i][b]=0; //positions
 		}
 	}
-	for(new i=0; i<10; i++){
-		classLimit[i]=-1; //class limit
+	for (new a=0; a<=1; a++){
+		for(new i=0; i<10; i++){
+			classLimit[a][i]=-1; //class limit
+		}
 	}
 	for(new i=0; i<commandCount; i++){ //game commands
 		gameCommands[i][0]=0;
@@ -356,9 +358,7 @@ public UpdateReadyHud()
 		KillTimer(showReadyHudTimer);
 		showReadyHudTimer=INVALID_HANDLE;
 	}//these updates may otherwise not show up for up to 1 second - I call ShowReadyHud and cancel the previous timer
-	if(!hasGameStarted){
-		ShowReadyHud(INVALID_HANDLE,1);
-	}
+
 	numReady=0;
 	numNotReady=0;
 	numNotConnected=0;
@@ -437,6 +437,9 @@ public UpdateReadyHud()
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),"\n  ");
 			numNotConnected++;
 		}	
+	}
+	if(!hasGameStarted){
+		ShowReadyHud(INVALID_HANDLE,1);
 	}
 }
 
@@ -634,22 +637,45 @@ public Action:CommandSetPlayerTeam(client,args){
 		return Plugin_Handled;
 	}
 
-	new String:teamBuffer[2];
+	new String:teamBuffer[7];
 	GetCmdArg(2,teamBuffer, sizeof( teamBuffer ) );
-	new teamNumber=StringToInt(teamBuffer);
+	//red is 2, blue is 3, spec is 1, either is -1 (either)
+	new teamNumber;
+	if(StrEqual(teamBuffer,"red")){
+		teamNumber=2;
+	}else if(StrEqual(teamBuffer,"blue")){
+		teamNumber=3;
+	}else if(StrEqual(teamBuffer,"spec")){
+		teamNumber=1;
+	}else if(StrEqual(teamBuffer,"either") || StrEqual(teamBuffer,"-1")){
+		teamNumber=-1;
+	}else{
+		LogMessage("Player %s was assigned invalid team %s. Setting team to either.", currentSteamID, teamBuffer);
+		teamNumber=-1;
+	}
 	teamForPlayer[index]=teamNumber;
 	return Plugin_Handled;
 }
 
 public Action:CommandSetClassLimit(client,args){
-//to-do: add class limit for each team
+	new String:teamBuffer[7];
+	GetCmdArg(1,teamBuffer,sizeof(teamBuffer));
 	new String:classBuffer[2];
-	GetCmdArg(1,classBuffer,sizeof(classBuffer));
+	GetCmdArg(2,classBuffer,sizeof(classBuffer));
 	new String:limitBuffer[3];
-	GetCmdArg(2,limitBuffer,sizeof(limitBuffer));
+	GetCmdArg(3,limitBuffer,sizeof(limitBuffer));
 	new class=StringToInt(classBuffer);
 	new limit=StringToInt(limitBuffer);
-	classLimit[class]=limit; //1 through 9
+	if(StrEqual(teamBuffer,"red")){
+		classLimit[0][class]=limit; //1 through 9
+	}else if(StrEqual(teamBuffer,"blue")){
+		classLimit[1][class]=limit;
+	}else if(StrEqual(teamBuffer,"both")){
+		classLimit[0][class]=limit;
+		classLimit[1][class]=limit;
+	}else{
+		LogMessage("Invalid team %s for class limit.",teamBuffer);
+	}
 }
 
 
@@ -675,7 +701,7 @@ public PutPlayersOnTeam()
 				GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
 				if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
 					if(teamForPlayer[a]==-1){
-						LogMessage("This player was not assigned a team: SteamID is %s. Can join any team..",currentSteamID);
+						LogMessage("Player with SteamID %s was not assigned a specific team; can join any team.",currentSteamID);
 						return;
 					}else if(teamForPlayer[a]==1){ //prints this even when you don't change team - might want to remove in that situation
 						PrintToChat(i,"\x04You are being moved to spectate.");
@@ -787,11 +813,26 @@ public PutPlayersOnClass()
 
 bool:IsFull(team,classNumber, TFClassType:class){
 	new count=1;
-	if(classLimit[classNumber]==-1){
-		LogMessage("Class number %d was not assigned a limit.", classNumber);
+	new limit;
+	if(team==2){
+		if(classLimit[0][classNumber]==-1){
+			//LogMessage("Class number %d was not assigned a limit for red team.", classNumber);
+			return false;
+		}else{
+			limit=classLimit[0][classNumber];
+		}
+	}else if(team==3){
+		if(classLimit[1][classNumber]==-1){
+			//LogMessage("Class number %d was not assigned a limit for blue team.", classNumber);
+			return false;
+		}else{
+			limit=classLimit[1][classNumber];
+		}
+	}else{
+		LogMessage("The player trying to switch class is not on red or blue.", classNumber);
 		return false;
 	}
-	new limit=classLimit[classNumber]
+	
 	for(new i = 1; i <= MaxClients; i++)
 	{
 		if(IsClientInGame(i) && (GetClientTeam(i) == team) && (TF2_GetPlayerClass(i) == class)){
@@ -1024,7 +1065,7 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 		}
 		new shouldTeam=teamForPlayer[i];
 		if(teamForPlayer[i]==-1){
-			LogMessage("Player with SteamID %s has no assigned team and can join any team.",currentSteamID);
+			//LogMessage("Player with SteamID %s has no assigned team and can join any team.",currentSteamID);
 			return Plugin_Continue;
 		}
 		if(newTeam!=shouldTeam){
