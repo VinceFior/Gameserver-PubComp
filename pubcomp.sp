@@ -1063,6 +1063,11 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 			LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
 			return Plugin_Handled;
 		}
+
+		if(GetClientTeam(client)==0){//then the player has just joined, not switching from an existing team; so we put the player on his class so he can respawn
+			SetPlayerClass(INVALID_HANDLE,client);
+		}
+
 		new shouldTeam=teamForPlayer[i];
 		if(teamForPlayer[i]==-1){
 			//LogMessage("Player with SteamID %s has no assigned team and can join any team.",currentSteamID);
@@ -1074,6 +1079,99 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 		}
 		return Plugin_Continue;
 	}
+}
+
+public Action:SetPlayerClass(Handle:timer, any:client){
+//Bug: like putplayersonclass, this lets a player be put on his assigned class even if the team has reached its limit for that class
+
+
+	new TFClassType:newClass;
+	new String:className[10];
+	new String:currentSteamID[20];
+	new i=client;
+	for (new a=0; a<numberOfPlayersAddSteam; a++){
+		currentSteamID="";
+		if(IsClientConnected(i)){
+			GetClientAuthString(i, currentSteamID,sizeof(currentSteamID));
+			new index=-1;
+			do{
+				index++;
+			}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+			if(index==numberOfPlayersAddSteam){
+				LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+				return;
+			}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not change his class
+				return;
+			}
+			if(StrEqual(currentSteamID,steamIDforTeamsAndClasses[a])){
+				switch (classForPlayer[a])
+				{
+					case -1:
+					{
+						LogMessage("Player with steamid %s was not given a class and can play any class.", currentSteamID);
+						return;
+					}
+					case 0:
+					{
+						return; //if spec; this should never be called
+					}
+					case 1:
+					{
+						newClass=TFClass_Scout;
+						className="scout";
+					}
+					case 2:
+					{
+						newClass=TFClass_Soldier;
+						className="soldier";
+					}
+					case 3:
+					{
+						newClass=TFClass_Pyro;
+						className="pyro";
+					}
+					case 4:
+					{
+						newClass=TFClass_DemoMan;
+						className="demoman";
+					}
+					case 5:
+					{
+						newClass=TFClass_Heavy;
+						className="heavy";
+					}
+					case 6:
+					{
+						newClass=TFClass_Engineer;
+						className="engineer";
+					}
+					case 7:
+					{
+						newClass=TFClass_Medic;
+						className="medic";
+					}
+					case 8:
+					{
+						newClass=TFClass_Sniper;
+						className="sniper";
+					}
+					case 9:
+					{
+						newClass=TFClass_Spy;
+						className="spy";
+					}
+					default:
+					{	//(if player wasn't given a class, they can play pyro. sure. trololo) EDIT: this should never be called now that I have the -1 case
+						newClass=TFClass_Pyro; //for some reason it doesn't recognize TFClass_PROro..
+						className="proro";
+					}
+				}
+				TF2_SetPlayerClass(i, newClass, true, true); //third was false, should be true - it should only be false if I'm calling this on a respawn player hook (which I don't)
+			}
+		}
+	}
+	
+
 }
 
 public Action:PlayerChangeClass(Handle:event, const String:name[], bool:dontBroadcast) {
@@ -1277,68 +1375,8 @@ public OnClientAuthorized( client, const String:auth[] ) {
 		KickClient( client, "Please join from the PubComp web interface" );
 	}
 
-	new String:currentSteamID[20];
-	currentSteamID="";
-	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
-	new index=-1;
-	do{
-		index++;
-	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
-	if(index==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
-		return;
-	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
-		return;
-	}
 
-	//resumes the game if the player is on the dropped list
-	currentSteamID="";
-	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
-	new indexFoundAt=-1;
-	for (new a=0; a<numberOfPlayersDropped; a++){
-		if(StrEqual(droppedPlayerSteamID[a],currentSteamID)){
-			droppedPlayerSteamID[a][0]=0;
-			numberOfPlayersDropped--;
-			waitingForPlayer--;
-			indexFoundAt=a;
-		}
-	}
-	//move every droppedPlayerSteamID above this one down one index in the array, so there's no empty spots in the array (so it's like X X [] [] [] instead of X [] X [] [])
-	if(indexFoundAt!=-1){//if the player who's joining was on the dropped players list
-		for (new a=indexFoundAt; a<numberOfPlayersDropped;a++){
-			if(a==MaxClients-1){
-				droppedPlayerSteamID[a][0]=0;
-			}else{
-				droppedPlayerSteamID[a]=droppedPlayerSteamID[a+1];
-			}
-		}
-		new String:playerName[MAX_NAME_LENGTH];
-		GetClientName( client, playerName, MAX_NAME_LENGTH );
-		LogMessage("Player %s with steamid %s has rejoined, no need for sub.", playerName, currentSteamID);
-		PrintToChatAll("\x04Canceling sub vote for %s.", playerName);
-	}
-
-
-	if(waitingForPlayer<=0 && hasGameStarted){
-			for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
-				for(new a=0; a<32; a++){
-					playerSubVote[i][a]=0; //shows players haven't voted about a sub
-				}
-			}
-
-			PrintToChatAll("\x04Game unpauses in 10 seconds.");
-			countdownTime=10;
-			CountdownDecrement(INVALID_HANDLE,2);
-			//the hud text does not show up if it is started when the game is paused, but it does continue into the pause if started before, which I'm using
-			UnpauseGameTimer=CreateTimer(10.0,UnpauseGame); //10 seconds is the time for the rejoining player to get up to Sending Client Info
-			for(new i=0; i<32; i++){
-				votesToSub[i]=0;
-				votesToWait[i]=0;
-
-			}
-			waitingForSubVote=false;
-			playerIndexToSubVoteFor=-1;
-	}	
+//big long dropped player reconnect code used to be here
 
 }
 
@@ -1591,13 +1629,80 @@ public Action:UnpauseGame(Handle:timer){
 }
 
 public OnClientPutInServer( client ) { //Nightgunner wrote this - does something with setting up MGE
+//this is called after the first bar of Sending Client Info
 	//maybe should not fake the client command or whatever if the player is a spec
-	new String:map[PLATFORM_MAX_PATH];
-	GetCurrentMap( map, PLATFORM_MAX_PATH );
-	if ( StrEqual( map, "mge_training_v7" ) ) {
-		FakeClientCommand( client, "say /first" );
-	}
+	//actually, this is called before the player's done loading - so Nightgunner's say doesn't do anything. Commenting out.
+//	new String:map[PLATFORM_MAX_PATH];
+//	GetCurrentMap( map, PLATFORM_MAX_PATH );
+//	if ( StrEqual( map, "mge_training_v7" ) ) {
+//		FakeClientCommand( client, "say /first" );
+//	}
 	UpdateReadyHud();//I added this
+
+
+//this code used to be in OnClientAuth, but the timing for players is more consistent and tighter when it's here
+//
+	new String:currentSteamID[20];
+	currentSteamID="";
+	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+		return;
+	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
+		return;
+	}
+	//resumes the game if the player is on the dropped list
+	currentSteamID="";
+	GetClientAuthString(client, currentSteamID,sizeof(currentSteamID));
+	new indexFoundAt=-1;
+	for (new a=0; a<numberOfPlayersDropped; a++){
+		if(StrEqual(droppedPlayerSteamID[a],currentSteamID)){
+			droppedPlayerSteamID[a][0]=0;
+			numberOfPlayersDropped--;
+			waitingForPlayer--;
+			indexFoundAt=a;
+		}
+	}
+	//move every droppedPlayerSteamID above this one down one index in the array, so there's no empty spots in the array (so it's like X X [] [] [] instead of X [] X [] [])
+	if(indexFoundAt!=-1){//if the player who's joining was on the dropped players list
+		for (new a=indexFoundAt; a<numberOfPlayersDropped;a++){
+			if(a==MaxClients-1){
+				droppedPlayerSteamID[a][0]=0;
+			}else{
+				droppedPlayerSteamID[a]=droppedPlayerSteamID[a+1];
+			}
+		}
+		new String:playerName[MAX_NAME_LENGTH];
+		GetClientName( client, playerName, MAX_NAME_LENGTH );
+		LogMessage("Player %s with steamid %s has rejoined, no need for sub.", playerName, currentSteamID);
+		PrintToChatAll("\x04Canceling sub vote for %s.", playerName);
+	}
+	if(waitingForPlayer<=0 && hasGameStarted){
+			for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
+				for(new a=0; a<32; a++){
+					playerSubVote[i][a]=0; //shows players haven't voted about a sub
+				}
+			}
+			PrintToChatAll("\x04Game unpauses in 5 seconds.");
+			countdownTime=5;
+			CountdownDecrement(INVALID_HANDLE,2);
+			//the hud text does not show up if it is started when the game is paused, but it does continue into the pause if started before, which I'm using
+			UnpauseGameTimer=CreateTimer(5.0,UnpauseGame); //5 seconds from second bar of Sending Client Info to in game
+			//USED TO BE: 10 seconds is the time for the rejoining player to get up to Sending Client Info
+			for(new i=0; i<32; i++){
+				votesToSub[i]=0;
+				votesToWait[i]=0;
+			}
+			waitingForSubVote=false;
+			playerIndexToSubVoteFor=-1;
+	}	
+//
+
+
 }
 
 public Action:CommandAddGameCommand( client, args ) {
@@ -1680,6 +1785,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 	GetClientName(client,playerNameForSay,sizeof(playerNameForSay));
 	if(hasPlayerSaid[client]==true && isPaused){
 		PrintToChatAll("%s :  %s",playerNameForSay,text); //this only works for all chat, not team chat
+		LogMessage("%s :  %s",playerNameForSay,text);
 	}else if (isPaused){
 		hasPlayerSaid[client]=true; //don't manually print the first message when paused
 	}
@@ -1696,7 +1802,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
 		return Plugin_Continue;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not let him vote
-		if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0) {
+		if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
 			PrintToChat(client, "\x04You cannot vote if you are a spectator.");
 			return Plugin_Continue;
 		}
@@ -1706,18 +1812,18 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		return Plugin_Continue;
 	}
 	// ready unready vote
-	if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0) {
+	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
 		if(GetClientTeam(client)==1){
 			PrintToChat(client, "\x04You cannot vote if you are on spectate.");
 			return Plugin_Continue;
 		}
 	}
-	if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, ".notready") == 0) {
+	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0) {
 		if(hasGameStarted || !canPlayersReady || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){//you can only ready/vote if you're on red or blue team
 			return Plugin_Continue;
 		}
 		new bool:didSwitch=false;
-		if (strcmp(text, ".ready") == 0 || strcmp(text, ".gaben") == 0) {
+		if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0) {
 			if(playerReady[client]!=true){
 				didSwitch=true;
 				//new String:playerName[32];
@@ -1728,7 +1834,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 			UpdateReadyHud();
 		}			
 
-		if (strcmp(text, ".notready") == 0 || strcmp(text, ".unready") == 0) {
+		if (strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0) {
 			if(playerReady[client]==true){
 				didSwitch=true;
 				//new String:playerName[32];
@@ -1790,11 +1896,11 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		}	
 	//sub wait vote
 //set index equal to the my 'array index' of the player in question
-	}else  if (strcmp(text, ".sub") == 0 || strcmp(text, ".wait") == 0){
+	}else  if (strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0){
 		if(!hasGameStarted || waitingForPlayer==0 || !(GetClientTeam(client)==2 || GetClientTeam(client)==3) || !waitingForSubVote){
 			return Plugin_Continue;
 		}
-		if (strcmp(text, ".sub") == 0) {
+		if (strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0) {
 			if(playerSubVote[client][playerIndexToSubVoteFor]!=1){
 				if(playerSubVote[client][playerIndexToSubVoteFor]==2){
 					votesToWait[playerIndexToSubVoteFor]--;
@@ -1804,7 +1910,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 				votesToSub[playerIndexToSubVoteFor]++;
 			}
 
-		}else if (strcmp(text, ".wait") == 0) {
+		}else if (strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
 			if(playerSubVote[client][playerIndexToSubVoteFor]!=2){
 				if(playerSubVote[client][playerIndexToSubVoteFor]==1){
 					votesToSub[playerIndexToSubVoteFor]--;
