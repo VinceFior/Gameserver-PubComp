@@ -108,6 +108,7 @@ public OnPluginStart() {
 	RegConsoleCmd("pubcomp_set_player_positions", CommandSetPlayerPositions, "", FCVAR_PLUGIN); // 2-5-8 is soldier, heavy and sniper; include main class
 	RegConsoleCmd("pubcomp_set_class_limit", CommandSetClassLimit, "",FCVAR_PLUGIN); //must be entered in order: scout, soldier, pyro, ... spy (total of 9 times)
 	RegConsoleCmd("pubcomp_add_steamid", CommandAddSteamID, "", FCVAR_PLUGIN ); //add steamid to the whitelist
+	RegConsoleCmd("pubcomp_remove_steamid", CommandRemoveSteamID, "", FCVAR_PLUGIN); //remove a steamid from the whitelist and its related settings
 	RegConsoleCmd("pubcomp_add_name",CommandAddName,"",FCVAR_PLUGIN); //add a player's name
 	RegConsoleCmd("pubcomp_set_mentor",CommandSetMentor,"",FCVAR_PLUGIN); //designate a player to be a mentor
 	RegConsoleCmd("pubcomp_add_game_command", CommandAddGameCommand, "", FCVAR_PLUGIN);//add rcon command to be executed upon match start
@@ -165,7 +166,7 @@ public Action:CommandResetGameSetup(client, args){
 	numberOfPlayersDropped=0;
 	PauseBotIndex=-1;
 	playerIndexToSubVoteFor=-1;
-	for (new sayClient=1; sayClient<=MaxClients; sayClient++){
+	for (new sayClient=1; sayClient<=MaxClients; sayClient++){ //should I replace all MaxClients with 32??
 		hasPlayerSaid[sayClient]=false;
 	}
 	playersNeeded = 12;
@@ -384,7 +385,7 @@ public UpdateReadyHud()
 				index++;
 			}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 			if(index==numberOfPlayersAddSteam){
-				LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+				LogMessage("Cannot find player with SteamID %s on the whitelist for the HUD.", currentSteamID); //one way this happens is if player's in game but not on whitelist
 			}else if(teamForPlayer[index]==1){ //if this player's team is spec
 				isSpec=true;
 			}else if(teamForPlayer[index]!=1){
@@ -432,7 +433,7 @@ public UpdateReadyHud()
 		}
 
 
-		if (a==MaxClients && isSpec==false){//then client not in the server (and not a spec)
+		if (a==MaxClients && isSpec==false){//then client not in the server (and not a spec) //should MaxClients be 32?
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),playerNames[i]);
 			StrCat(notConnectedPlayersString,sizeof(notConnectedPlayersString),"\n  ");
 			numNotConnected++;
@@ -555,9 +556,9 @@ public Action:CommandSetMentor(client, args){
 		i++;
 	}while(i<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
 	if(i==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist to set as mentor.", currentSteamID);
+		LogMessage("Cannot find player with SteamID %s on the whitelist to set as mentor.", currentSteamID); //todo: make these logs uniquely identifiable (number or something)
 	}else{
-		LogMessage("Player with steamid %s is set as a mentor.", currentSteamID);
+		LogMessage("Player with SteamID %s is set as a mentor.", currentSteamID);
 		isMentor[i]=true;	
 	}
 
@@ -733,7 +734,7 @@ public PutPlayersOnClass()
 					index++;
 				}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 				if(index==numberOfPlayersAddSteam){
-					LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+					LogMessage("Cannot find player with SteamID %s on the whitelist.", currentSteamID);
 					return;
 				}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not change his class
 					return;
@@ -875,6 +876,189 @@ public Action:CommandAddName(client,args){
 	return Plugin_Handled;
 }
 
+public Action:CommandRemoveSteamID(client, args){
+	//to-do: should probably also remove the following tied to this steam id
+	//votesToSub and votesToWait, dropped Players, hasPlayerSaid, playerReady, playerSubVote
+	if(client!=0){
+		LogMessage("Client %d is not permitted to add users to the whitelist.", client);
+		return Plugin_Stop;
+	}
+	new String:id[20];
+	GetCmdArg(1,id,sizeof(id));
+
+	//remove name
+	new index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(id,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to remove name for.", id);
+	}else{
+		//steamIDforTeamsAndClasses[index] is the right one
+		//and playerNames[index] is the right one
+		LogMessage("Removed name %s of steamid %s from the list.", playerNames[index], id);
+		playerNames[index][0]=0;
+		//lower everything down one
+		for (new a=index; a<numberOfPlayersAddSteam; a++){
+			if(a==32-1){//was MaxClients-1
+				playerNames[a][0]=0;
+			}else{
+				playerNames[a]=playerNames[a+1];
+				if(a==numberOfPlayersAddSteam-1){
+					playerNames[a+1][0]=0;
+				}
+			}
+		}
+	}
+
+	//remove team
+	index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(id,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to remove team for.", id);
+	}else{
+		//steamIDforTeamsAndClasses[index] is the right one
+		//and teamForPlayer[index] is the right one
+		LogMessage("Removed team %d of SteamID %s from the list.", teamForPlayer[index], id);
+		teamForPlayer[index]=-1;
+		//lower everything down one
+		for (new a=index; a<numberOfPlayersAddSteam; a++){
+			if(a==32-1){
+				teamForPlayer[a]=-1;
+			}else{
+				teamForPlayer[a]=teamForPlayer[a+1];
+				if(a==numberOfPlayersAddSteam-1){
+					teamForPlayer[a+1]=-1;
+				}
+			}
+		}
+	}
+
+	//remove class
+	index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(id,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to remove class for.", id);
+	}else{
+		//steamIDforTeamsAndClasses[index] is the right one
+		//and classForPlayer[index] is the right one
+		LogMessage("Removed class %d of SteamID %s from the list.", classForPlayer[index], id);
+		classForPlayer[index]=-1;
+		//lower everything down one
+		for (new a=index; a<numberOfPlayersAddSteam; a++){
+			if(a==32-1){
+				classForPlayer[a]=-1;
+			}else{
+				classForPlayer[a]=classForPlayer[a+1];
+				if(a==numberOfPlayersAddSteam-1){
+					classForPlayer[a+1]=-1;
+				}
+			}
+		}
+	}
+
+	//remove positions
+	index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(id,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to remove positions for.", id);
+	}else{
+		//steamIDforTeamsAndClasses[index] is the right one
+		//and positionsForPlayer[index] is the right one
+		LogMessage("Removed positions of SteamID %s from the list.", id);
+		for(new b=0;b<9;b++){
+			positionsForPlayer[index][b]=0;
+		}
+		//lower everything down one
+		for (new a=index; a<numberOfPlayersAddSteam; a++){
+			if(a==32-1){
+				for(new b=0;b<9;b++){
+					positionsForPlayer[a][b]=0;
+				}
+			}else{
+
+				for(new b=0;b<9;b++){
+					positionsForPlayer[a][b]=positionsForPlayer[a+1][b];
+				}
+
+				if(a==numberOfPlayersAddSteam-1){
+				for(new b=0;b<9;b++){
+					positionsForPlayer[a+1][b]=0;
+					}
+				}
+			}
+		}
+	}
+
+	//remove mentor
+	index=-1;
+	do{
+		index++;
+	}while(index<numberOfPlayersAddSteam && !StrEqual(id,steamIDforTeamsAndClasses[index]))
+	if(index==numberOfPlayersAddSteam){
+		LogMessage("No player with SteamID %s found to remove mentor status for.", id);
+	}else{
+		//steamIDforTeamsAndClasses[index] is the right one
+		//and classForPlayer[index] is the right one
+		LogMessage("Removed mentor status %b of SteamID %s from the list.", isMentor[index], id);
+		isMentor[index]=false;
+		//lower everything down one
+		for (new a=index; a<numberOfPlayersAddSteam; a++){
+			if(a==32-1){
+				isMentor[a]=false;
+			}else{
+				isMentor[a]=isMentor[a+1];
+				if(a==numberOfPlayersAddSteam-1){
+					isMentor[a+1]=false;
+				}
+			}
+		}
+	}
+
+
+	//remove the steamid from the whitelist - this must come after the other removals
+	new bool:hasRemoved=false;
+	//new bool:hasLowered;
+	for(new i=0; i<32; i++){ //removes XXXall copies of the steamidXXX see commented out lines; now only removes the first (lowest index), like the other removals
+		if(StrEqual(steamIDforTeamsAndClasses[i],id)){ //if this is the right index for this steamid
+			//hasLowered=false;
+			steamIDforTeamsAndClasses[i][0]=0;
+			LogMessage("Removed SteamID %s from the whitelist.", id);
+			hasRemoved=true;
+			numberOfPlayersAddSteam--;
+			//lower everything down one
+			for (new a=i; a<numberOfPlayersAddSteam; a++){
+				if(a==32-1){
+					steamIDforTeamsAndClasses[a][0]=0;
+				}else{
+					steamIDforTeamsAndClasses[a]=steamIDforTeamsAndClasses[a+1];
+					if(a==numberOfPlayersAddSteam-1){
+						steamIDforTeamsAndClasses[a+1][0]=0;
+					}
+				}
+				//hasLowered=true;
+			}
+			//if(hasLowered){
+			//	i--; //so it doesn't skip
+			//}
+			UpdateReadyHud();
+			return Plugin_Handled; //these two lines (mainly this one) stop it from removing more than one copy
+		}
+	}
+	if(!hasRemoved){
+		LogMessage("No player with SteamID %s found on the whitelist to remove.", id);
+	}
+
+	UpdateReadyHud();
+	return Plugin_Handled;
+}
+
 public Action:CommandAddSteamID( client, args ) {
 	if ( client != 0 ) {
 		LogMessage( "Client %d is not permitted to add users to the whitelist.", client );
@@ -914,7 +1098,7 @@ public Action:CommandReplaceSteamIDSub(client, args){
 	new String:newPlayerName[MAX_NAME_LENGTH];
 
 	if(i==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist.", oldAndNewSteamids[0]);
+		LogMessage("Cannot find player with SteamID %s on the whitelist.", oldAndNewSteamids[0]);
 	}else{
 
 		oldPlayerName=playerNames[i];
@@ -931,7 +1115,7 @@ public Action:CommandReplaceSteamIDSub(client, args){
 	}while(i<numberOfPlayersDropped && !StrEqual(oldAndNewSteamids[0],droppedPlayerSteamID[i]));
 
 	if(i==numberOfPlayersDropped){
-		LogMessage("Cannot find player with steamid %s on the dropped players list.", oldAndNewSteamids[0]);
+		LogMessage("Cannot find player with SteamID %s on the dropped players list.", oldAndNewSteamids[0]);
 	}else{
 		droppedPlayerSteamID[i]=oldAndNewSteamids[1];
 		LogMessage( "Replaced %s of steamid %s with %s of steamid %s on the dropped players list.",oldPlayerName,oldAndNewSteamids[0],newPlayerName,oldAndNewSteamids[1]);
@@ -1060,7 +1244,7 @@ public Action:Command_JoinTeam(client, const String:command[], args)
 			i++;
 		}while(i<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[i]))
 		if(i==numberOfPlayersAddSteam){
-			LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+			LogMessage("Cannot find player with SteamID %s on the whitelist.", currentSteamID);
 			return Plugin_Handled;
 		}
 
@@ -1098,7 +1282,7 @@ public Action:SetPlayerClass(Handle:timer, any:client){
 				index++;
 			}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 			if(index==numberOfPlayersAddSteam){
-				LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+				LogMessage("Cannot find player with SteamID %s on the whitelist.", currentSteamID);
 				return;
 			}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not change his class
 				return;
@@ -1400,7 +1584,7 @@ public OnClientDisconnect(client){
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 	if(index==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+		LogMessage("Cannot find player with SteamID %s on the whitelist.", currentSteamID);
 		return;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
 		return;
@@ -1650,7 +1834,7 @@ public OnClientPutInServer( client ) { //Nightgunner wrote this - does something
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 	if(index==numberOfPlayersAddSteam){
-		LogMessage("Cannot find player with steamid %s on the whitelist.", currentSteamID);
+		LogMessage("Cannot find player with SteamID %s on the whitelist.", currentSteamID);
 		return;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not worry about him
 		return;
@@ -1664,16 +1848,23 @@ public OnClientPutInServer( client ) { //Nightgunner wrote this - does something
 			droppedPlayerSteamID[a][0]=0;
 			numberOfPlayersDropped--;
 			waitingForPlayer--;
+			if(indexFoundAt!=-1){
+				LogMessage("Error with removing player from dropped list! His SteamID is on here twice, something's wrong!"); //should fix eventually I guess
+			}
 			indexFoundAt=a;
+			//if this is going to run for every instance of the steamid, should 'have the "hasLowered" bool set here', meaning a--
 		}
 	}
 	//move every droppedPlayerSteamID above this one down one index in the array, so there's no empty spots in the array (so it's like X X [] [] [] instead of X [] X [] [])
 	if(indexFoundAt!=-1){//if the player who's joining was on the dropped players list
 		for (new a=indexFoundAt; a<numberOfPlayersDropped;a++){
-			if(a==MaxClients-1){
+			if(a==32-1){
 				droppedPlayerSteamID[a][0]=0;
 			}else{
 				droppedPlayerSteamID[a]=droppedPlayerSteamID[a+1];
+				if(a==numberOfPlayersDropped-1){ //added
+					droppedPlayerSteamID[a+1][0]=0;
+				}
 			}
 		}
 		new String:playerName[MAX_NAME_LENGTH];
@@ -1681,6 +1872,8 @@ public OnClientPutInServer( client ) { //Nightgunner wrote this - does something
 		LogMessage("Player %s with steamid %s has rejoined, no need for sub.", playerName, currentSteamID);
 		PrintToChatAll("\x04Canceling sub vote for %s.", playerName);
 	}
+
+
 	if(waitingForPlayer<=0 && hasGameStarted){
 			for(new i=1; i<MAXPLAYERS+1; i++){ //players haven't voted about a sub
 				for(new a=0; a<32; a++){
@@ -1701,6 +1894,8 @@ public OnClientPutInServer( client ) { //Nightgunner wrote this - does something
 			playerIndexToSubVoteFor=-1;
 	}	
 //
+
+
 
 
 }
@@ -1799,10 +1994,10 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		index++;
 	}while(index<numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index]))
 	if(index==numberOfPlayersAddSteam && !StrEqual(currentSteamID,steamIDforTeamsAndClasses[index])){//added in and: if it's the last player and it's not on the list
-		LogMessage("Cannot find player with steamid %s on the whitelist", currentSteamID);
+		LogMessage("Cannot find player with SteamID %s on the whitelist", currentSteamID);
 		return Plugin_Continue;
 	}else if(teamForPlayer[index]==1){ //if this player's team is spec, do not let him vote
-		if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
+		if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
 			PrintToChat(client, "\x04You cannot vote if you are a spectator.");
 			return Plugin_Continue;
 		}
@@ -1812,13 +2007,13 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 		return Plugin_Continue;
 	}
 	// ready unready vote
-	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
+	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".sub") == 0 || strcmp(text, "!sub") == 0 || strcmp(text, "/sub") == 0 || strcmp(text, ".wait") == 0 || strcmp(text, "!wait") == 0 || strcmp(text, "/wait") == 0) {
 		if(GetClientTeam(client)==1){
 			PrintToChat(client, "\x04You cannot vote if you are on spectate.");
 			return Plugin_Continue;
 		}
 	}
-	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0) {
+	if (strcmp(text, ".ready") == 0 || strcmp(text, "!ready") == 0 || strcmp(text, "/ready") == 0 || strcmp(text, ".gaben") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0 || strcmp(text, ".notready") == 0 || strcmp(text, "!notready") == 0 || strcmp(text, "/notready") == 0) {
 		if(hasGameStarted || !canPlayersReady || !(GetClientTeam(client)==2 || GetClientTeam(client)==3)){//you can only ready/vote if you're on red or blue team
 			return Plugin_Continue;
 		}
@@ -1834,7 +2029,7 @@ public Action:ReadyUnready(client, args) { //should let this work in team chat t
 			UpdateReadyHud();
 		}			
 
-		if (strcmp(text, ".notready") == 0 || strcmp(text, "!notnready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0) {
+		if (strcmp(text, ".notready") == 0 || strcmp(text, "!notready") == 0 || strcmp(text, "/notready") == 0 || strcmp(text, ".unready") == 0 || strcmp(text, "!unready") == 0 || strcmp(text, "/unready") == 0) {
 			if(playerReady[client]==true){
 				didSwitch=true;
 				//new String:playerName[32];
